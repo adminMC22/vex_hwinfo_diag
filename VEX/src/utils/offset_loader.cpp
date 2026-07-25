@@ -1,13 +1,9 @@
 #include <Windows.h>
 #include <fstream>
-#include "utils/json.hpp"
-#include "game/offsets.hpp"
 #include <sstream>
 #include <iostream>
+#include "game/offsets.hpp"
 #include "utils/CurlSetup.hpp"
-#include <sstream>
-
-using json = nlohmann::json;
 
 template <typename T>
 void readValue(const json& src, T& dest)

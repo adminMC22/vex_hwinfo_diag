@@ -149,6 +149,10 @@ namespace offsets {
     inline uintptr_t& outline_mode        = OutlineMode;
     inline uintptr_t& attach_children     = AttachChildren;
     inline uintptr_t& attach_children_count = AttachChildrenCount;
+    inline uintptr_t& outline_component   = OutlineComponent;
+    inline uintptr_t& portrait_map        = PortraitMap;
+    inline uintptr_t& character_map       = CharacterMap;
+    inline uintptr_t& pov                 = POV;
     inline uintptr_t& team_component      = TeamComponent;
     inline uintptr_t& team_id             = TeamID;
     inline uintptr_t& current_health      = Health;
