@@ -182,6 +182,7 @@ namespace sky::driver {
 
     static bool open_hwinfo_device() {
         // First try all known device paths
+        DWORD last_err = 0;
         for (int i = 0; DEVICE_PATHS[i]; i++) {
             g_hwinfo_device = CreateFileA(DEVICE_PATHS[i],
                 GENERIC_READ | GENERIC_WRITE,
@@ -192,12 +193,25 @@ namespace sky::driver {
                 LOG_INFO(std::string("Opened device: ") + DEVICE_PATHS[i]);
                 return true;
             }
+            last_err = GetLastError();
+            LOG_ERROR(std::string("CreateFile failed for ") + DEVICE_PATHS[i] + " (err=" + std::to_string(last_err) + ")");
         }
+
+        // Build detailed error message
+        std::string err_msg = "Failed to open HWiNFO device.\n\n"
+            "Last Windows error code: " + std::to_string(last_err) + "\n"
+            "(5 = Access Denied, 2 = Not Found, 32 = sharing violation)\n\n"
+            "Device paths tried:\n";
+        for (int i = 0; DEVICE_PATHS[i]; i++) {
+            err_msg += "  " + std::string(DEVICE_PATHS[i]) + "\n";
+        }
+        err_msg += "\nMake sure HWiNFO64 is running as Admin RIGHT NOW\n"
+            "(do not close it before launching Sky.exe)";
+        MessageBoxA(0, err_msg.c_str(), "Driver Diagnostics", MB_OK | MB_ICONWARNING);
 
         // Try to auto-load the HWiNFO driver
         LOG_INFO("Device not found, attempting to load HWiNFO driver...");
         if (ensure_hwinfo_driver_loaded()) {
-            // Retry opening device
             Sleep(500);
             for (int i = 0; DEVICE_PATHS[i]; i++) {
                 g_hwinfo_device = CreateFileA(DEVICE_PATHS[i],
