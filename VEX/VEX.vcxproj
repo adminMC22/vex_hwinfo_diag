@@ -220,6 +220,7 @@
     <ClCompile Include="src\driver\driver_impl.cpp" />
     <ClCompile Include="src\game\vgk_system.cpp" />
     <ClCompile Include="src\game\engine\game_engine.cpp" />
+    <ClCompile Include="src\utils\offset_loader.cpp" />
     <!-- SDK UE5 -->
     <ClCompile Include="src\game\sdk\ulevel.cpp" />
     <ClCompile Include="src\game\sdk\ugame_instance.cpp" />

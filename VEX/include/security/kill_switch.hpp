@@ -15,20 +15,16 @@
  *   - No trace of the cheat is left behind
  */
 
-#include <Windows.h>
 #include <thread>
 #include <atomic>
 #include <functional>
-#include <chrono>
-#include <string>
-#include <fstream>
+#include <Windows.h>
+#include "driver/driver_context.hpp"
 #include "utils/logger.hpp"
 
 namespace vex::security {
 
-    // Forward declare the device handle from driver_impl.cpp
-    // (We just need to close it on panic)
-    extern HANDLE g_hwinfo_device;
+    // KillSwitch uses vex::driver::g_hwinfo_device from driver_context.hpp
 
     struct KillSwitchConfig {
         int panic_key = VK_F10;           // Panic hotkey
@@ -91,10 +87,10 @@ namespace vex::security {
             LOG_WARNING("[KillSwitch] === EMERGENCY PANIC ===");
 
             // 1. Close HWiNFO device handle
-            if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
+            if (vex::driver::g_hwinfo_device != INVALID_HANDLE_VALUE) {
                 LOG_INFO("[KillSwitch] Closing HWiNFO device handle...");
-                CloseHandle(g_hwinfo_device);
-                g_hwinfo_device = INVALID_HANDLE_VALUE;
+                CloseHandle(vex::driver::g_hwinfo_device);
+                vex::driver::g_hwinfo_device = INVALID_HANDLE_VALUE;
             }
 
             // 2. Wipe logs
@@ -115,15 +111,12 @@ namespace vex::security {
 
         static bool detect_vgk_scanning() {
             // Check if VGK is actively scanning our process
-            // by testing handle access patterns
             HANDLE test = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
                                        FALSE, GetCurrentProcessId());
             if (test) {
                 CloseHandle(test);
                 return false; // Normal
             }
-            // If OpenProcess suddenly fails from our own PID,
-            // VGK may be blocking us — could be detection
             if (GetLastError() == ERROR_ACCESS_DENIED) {
                 return true; // Suspicious
             }
@@ -131,10 +124,7 @@ namespace vex::security {
         }
 
         static void WipeLogs() {
-            // Clear console title
             SetConsoleTitleA("");
-
-            // Clear our log file if it exists
             DeleteFileA("VEX.log");
             DeleteFileA("debug.log");
         }
