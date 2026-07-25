@@ -29,7 +29,8 @@ namespace vex::game::engine {
         sdk::FRotator LastValidRotation{};
         float LastValidFOV = 90.0f;
         bool HasValidCache = false;
-    } m_cameraCache;
+    };
+    inline CameraCache m_cameraCache;
 
     struct WorldData {
         sdk::UWorld world{0};

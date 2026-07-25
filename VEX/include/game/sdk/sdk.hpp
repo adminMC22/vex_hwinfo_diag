@@ -821,7 +821,7 @@ namespace vex::game::sdk {
             return a + (b - a) * alpha;
         }
 
-        D3DMatrix toMatrix(FRotator Rotation, FVector origin)
+        inline D3DMatrix toMatrix(FRotator Rotation, FVector origin)
         {
             double Pitch = ((double)Rotation.Pitch * double(Constants::DEG_TO_RAD));
             double Yaw = ((double)Rotation.Yaw * double(Constants::DEG_TO_RAD));
