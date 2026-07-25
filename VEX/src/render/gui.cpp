@@ -36,13 +36,7 @@ void c_gui::render()
 
 			gui->begin_content(xorstr_("logo_rect"), SCALE(var->window.logo_size));
 			{
-				static ID3D11ShaderResourceView* logo_resource = nullptr;
-
-				D3DX11_IMAGE_LOAD_INFO info; ID3DX11ThreadPump* pump{ nullptr };
-
-				if (logo_resource == nullptr)
-					D3DX11CreateShaderResourceViewFromMemory(var->device_dx11, logo, sizeof(logo), &info, pump, &logo_resource, 0);
-
+				// Logo - colored rect (no D3DX11 dependency)
 				ImVec2 window_pos = GetWindowPos();
 				ImVec2 window_size = GetWindowSize();
 				ImVec2 logo_size = SCALE(ImVec2(32.0f, 32.0f));
@@ -52,7 +46,7 @@ void c_gui::render()
 					window_pos.y + (window_size.y - logo_size.y) * 0.5f
 				);
 			
-				GetWindowDrawList()->AddImage(logo_resource, logo_pos, logo_pos + logo_size);
+				GetWindowDrawList()->AddRectFilled(logo_pos, logo_pos + logo_size, ImColor(255, 255, 255, 80), 4.0f);
 			}
 			gui->end_content();
 

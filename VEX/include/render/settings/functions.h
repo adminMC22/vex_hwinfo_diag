@@ -1,7 +1,6 @@
 #pragma once
 
 #define IMGUI_DEFINE_MATH_OPERATORS
-#include <D3DX11tex.h>
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "../data/images.h"
@@ -15,9 +14,6 @@
 #include <chrono>
 #include <deque>
 #include <algorithm>
-
-// D3DX11.lib for ClangCL/LLVM
-#pragma comment(lib, "D3DX11.lib")
 
 using namespace ImGui;
 

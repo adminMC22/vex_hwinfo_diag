@@ -16,10 +16,8 @@ echo   1. Visual Studio 2022 Community
 echo   2. LLVM/Clang toolset - In VS Installer:
 echo      Workloads > Desktop development with C++
 echo      Individual components > "C++ Clang tools for Windows"
-echo   3. DirectX SDK (June 2010):
-echo      https://www.microsoft.com/en-us/download/details.aspx?id=6812
-echo      Install to C:\DXSDK (default path)
 echo.
+echo NOTE: No DirectX SDK needed since D3DX11 removed.
 
 :: Check admin
 net session >nul 2>&1
@@ -31,17 +29,6 @@ if %errorlevel% neq 0 (
 
 set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
-
-:: Verify DirectX SDK
-if not exist "C:\DXSDK\Include\D3DX11tex.h" (
-    echo [!] DirectX SDK not found at C:\DXSDK\
-    echo     Install DirectX SDK June 2010 from:
-    echo     https://www.microsoft.com/en-us/download/details.aspx?id=6812
-    echo     Use default install path: C:\DXSDK
-    pause
-    exit /b 1
-)
-echo [+] DirectX SDK: found at C:\DXSDK
 
 :: Check ClangCL (both standard and user's D: drive path)
 set "PF86=%ProgramFiles(x86)%"

@@ -72,8 +72,8 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IncludePath>$(SolutionDir);$(SolutionDir)VEX;$(SolutionDir)VEX\include;C:\DXSDK\Include;$(SolutionDir)3rd;$(IncludePath)</IncludePath>
-    <LibraryPath>$(SolutionDir)3rd/freetype;C:\DXSDK\Lib\x64;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(SolutionDir);$(SolutionDir)VEX;$(SolutionDir)VEX\include;$(SolutionDir)3rd;$(IncludePath)</IncludePath>
+    <LibraryPath>$(SolutionDir)3rd/freetype;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
