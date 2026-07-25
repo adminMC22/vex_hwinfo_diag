@@ -29,6 +29,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: VEX.exe
-        path: VEX/bin/Release/x64/VEX.exe
+        path: x64/Release/VEX.exe
         compression-level: 0
         if-no-files-found: error
