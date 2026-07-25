@@ -51,19 +51,69 @@ namespace sky::driver {
     // ---- Driver auto-load helper ----
     // Tries to start or load the HWiNFO kernel driver via SCM
     static bool ensure_hwinfo_driver_loaded() {
-        // Known driver file names
-        const char* DRIVER_FILES[] = {
-            "hwinfo64.sys",
-            "hwinfo.sys",
-            nullptr
-        };
-        // Known install directories
-        const char* INSTALL_DIRS[] = {
+        // Search multiple locations for HWiNFO driver file
+        const char* SEARCH_DIRS[] = {
             "C:\\Program Files\\HWiNFO64\\",
             "C:\\Program Files (x86)\\HWiNFO\\",
             "C:\\Program Files\\HWiNFO\\",
+            "C:\\Users\\Public\\",
             nullptr
         };
+
+        std::string driver_path;
+
+        // First: check %TEMP% for HWiNFO*.sys (modern HWiNFO versions)
+        char temp_path[MAX_PATH + 1] = { 0 };
+        if (GetTempPathA(MAX_PATH, temp_path) > 0) {
+            std::string search_path = std::string(temp_path) + "HWiNFO*.sys";
+            WIN32_FIND_DATAA find_data;
+            HANDLE hFind = FindFirstFileA(search_path.c_str(), &find_data);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                driver_path = std::string(temp_path) + find_data.cFileName;
+                LOG_INFO(std::string("Found driver in TEMP: ") + driver_path);
+                FindClose(hFind);
+            }
+        }
+
+        // Second: search Program Files for HWiNFO*.sys
+        if (driver_path.empty()) {
+            for (int i = 0; SEARCH_DIRS[i]; i++) {
+                std::string search_path = std::string(SEARCH_DIRS[i]) + "HWiNFO*.sys";
+                WIN32_FIND_DATAA find_data;
+                HANDLE hFind = FindFirstFileA(search_path.c_str(), &find_data);
+                if (hFind != INVALID_HANDLE_VALUE) {
+                    driver_path = std::string(SEARCH_DIRS[i]) + find_data.cFileName;
+                    LOG_INFO(std::string("Found driver: ") + driver_path);
+                    FindClose(hFind);
+                    break;
+                }
+            }
+        }
+
+        // Third: try exact known filenames
+        if (driver_path.empty()) {
+            const char* DRIVER_FILES[] = {
+                "hwinfo64.sys",
+                "hwinfo.sys",
+                nullptr
+            };
+            for (int d = 0; DRIVER_FILES[d]; d++) {
+                for (int i = 0; SEARCH_DIRS[i]; i++) {
+                    std::string test_path = std::string(SEARCH_DIRS[i]) + DRIVER_FILES[d];
+                    DWORD attr = GetFileAttributesA(test_path.c_str());
+                    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                        driver_path = test_path;
+                        break;
+                    }
+                }
+                if (!driver_path.empty()) break;
+            }
+        }
+
+        if (driver_path.empty()) {
+            LOG_ERROR("HWiNFO driver file not found anywhere on system");
+            return false;
+        }
 
         // Step 1: Try to start existing HWiNFO service
         SC_HANDLE sc_manager = OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT);
@@ -77,44 +127,23 @@ namespace sky::driver {
             for (int s = 0; SERVICE_NAMES[s]; s++) {
                 SC_HANDLE sc_service = OpenServiceA(sc_manager, SERVICE_NAMES[s], SERVICE_START | SERVICE_QUERY_STATUS);
                 if (sc_service) {
-                    // Check if already running
                     SERVICE_STATUS status;
                     if (QueryServiceStatus(sc_service, &status) && status.dwCurrentState == SERVICE_STOPPED) {
-                        // Start it
                         StartService(sc_service, 0, nullptr);
-                        // Wait briefly for driver to initialize
                         Sleep(1000);
                     }
                     CloseServiceHandle(sc_service);
                     CloseServiceHandle(sc_manager);
-                    return true; // If the service exists, the driver should be loadable
+                    return true;
                 }
             }
             CloseServiceHandle(sc_manager);
         }
 
-        // Step 2: No service found — try to install+start driver manually
-        // This requires running as Admin (which Sky.exe does)
-        std::string driver_path;
-        for (int d = 0; DRIVER_FILES[d]; d++) {
-            for (int i = 0; INSTALL_DIRS[i]; i++) {
-                std::string test_path = std::string(INSTALL_DIRS[i]) + DRIVER_FILES[d];
-                DWORD attr = GetFileAttributesA(test_path.c_str());
-                if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-                    driver_path = test_path;
-                    break;
-                }
-            }
-            if (!driver_path.empty()) break;
-        }
-
-        if (driver_path.empty()) {
-            return false; // Can't find driver file anywhere
-        }
-
-        // Install and start the driver
+        // Step 2: No service found - install+start driver manually
         sc_manager = OpenSCManager(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
         if (!sc_manager) {
+            LOG_ERROR("Failed to open SCM (need admin)");
             return false;
         }
 
@@ -127,7 +156,6 @@ namespace sky::driver {
         if (!sc_service) {
             DWORD err = GetLastError();
             if (err == ERROR_SERVICE_EXISTS || err == ERROR_DUPLICATE_SERVICE_NAME) {
-                // Already exists, try to open it
                 sc_service = OpenServiceA(sc_manager, "HWiNFO_SERVICE", SERVICE_START);
             }
         }
@@ -135,8 +163,8 @@ namespace sky::driver {
         if (sc_service) {
             if (!StartService(sc_service, 0, nullptr)) {
                 DWORD err = GetLastError();
-                // ERROR_SERVICE_ALREADY_RUNNING is fine
                 if (err != ERROR_SERVICE_ALREADY_RUNNING) {
+                    LOG_ERROR("Failed to start HWiNFO service: " + std::to_string(err));
                     CloseServiceHandle(sc_service);
                     CloseServiceHandle(sc_manager);
                     return false;
@@ -144,7 +172,7 @@ namespace sky::driver {
             }
             CloseServiceHandle(sc_service);
             CloseServiceHandle(sc_manager);
-            Sleep(1000); // Wait for driver to start
+            Sleep(1000);
             return true;
         }
 
