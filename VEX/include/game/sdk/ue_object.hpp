@@ -11,7 +11,7 @@
 #include <vector>
 #include <algorithm> 
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     class FNameCache; // forward declaration
 
@@ -39,13 +39,13 @@ namespace vex::game::sdk {
         template<typename T>
         T read(uintptr_t offset = 0) const {
             if (!this->is_valid()) return T{};
-            return vex::driver::g_driver->read<T>(m_base_address + offset);
+            return sky::driver::g_driver->read<T>(m_base_address + offset);
         }
 
 		template<typename T>
         void write(uintptr_t offset, const T& value) const {
             if (!this->is_valid()) return;
-            vex::driver::g_driver->write<T>(m_base_address + offset, value);
+            sky::driver::g_driver->write<T>(m_base_address + offset, value);
 		}
 
         uintptr_t get_vtable() const {
@@ -103,7 +103,7 @@ namespace vex::game::sdk {
             if (!is_valid()) return {};
             auto root_comp = RootComponent();
             if (!root_comp) return {};
-            return vex::driver::g_driver->read<FVector>(root_comp + offsets::RelativeLocation);
+            return sky::driver::g_driver->read<FVector>(root_comp + offsets::RelativeLocation);
         }
 
         std::string get_name_string() const {
@@ -119,12 +119,12 @@ namespace vex::game::sdk {
             // Direct name pool read
             const std::uint32_t chunkOffset = static_cast<std::uint32_t>(key >> 16);
             const std::uint16_t nameOffset = static_cast<std::uint16_t>(key & 0xFFFF);
-            const std::uintptr_t chunkAddr = vex::driver::g_driver->get_base_address() + offsets::FNamePool + ((static_cast<unsigned long long>(chunkOffset) + 2ULL) * 8ULL);
-            const std::uintptr_t namePoolChunk = vex::driver::g_driver->read<std::uintptr_t>(chunkAddr);
+            const std::uintptr_t chunkAddr = sky::driver::g_driver->get_base_address() + offsets::FNamePool + ((static_cast<unsigned long long>(chunkOffset) + 2ULL) * 8ULL);
+            const std::uintptr_t namePoolChunk = sky::driver::g_driver->read<std::uintptr_t>(chunkAddr);
             if (namePoolChunk == 0) return "None";
             const std::uintptr_t entryOffset = namePoolChunk + (static_cast<unsigned long long>(4) * nameOffset);
 
-            FNameEntry nameEntry = vex::driver::g_driver->read<FNameEntry>(entryOffset);
+            FNameEntry nameEntry = sky::driver::g_driver->read<FNameEntry>(entryOffset);
             std::uintptr_t nameKey = DecryptNameKey();
             const std::uint16_t len = nameEntry.Header.Len;
             if (!nameKey || len == 0 || len > 1023) {
@@ -218,7 +218,7 @@ namespace vex::game::sdk {
             uintptr_t namepool_state_offset = offsets::FNameState;
             uintptr_t namepool_key_offset = namepool_state_offset + 0x38;
 
-            uint64_t namepoolkey = vex::driver::g_driver->read<uint64_t>(vex::driver::g_driver->get_base_address() + namepool_key_offset);
+            uint64_t namepoolkey = sky::driver::g_driver->read<uint64_t>(sky::driver::g_driver->get_base_address() + namepool_key_offset);
             if (!namepoolkey)
                 return 0;
 #pragma pack(push, 1)
@@ -226,11 +226,11 @@ namespace vex::game::sdk {
                 uintptr_t keys[7];
             };
 #pragma pack(pop)
-            State xor_state = vex::driver::g_driver->read<State>(vex::driver::g_driver->get_base_address() + namepool_state_offset);
+            State xor_state = sky::driver::g_driver->read<State>(sky::driver::g_driver->get_base_address() + namepool_state_offset);
             auto address = decrypt_xor_keys(namepoolkey, reinterpret_cast<uintptr_t*>(&xor_state));
-            uintptr_t xors = vex::driver::g_driver->read<uintptr_t>(address);
+            uintptr_t xors = sky::driver::g_driver->read<uintptr_t>(address);
             return xors;
         }
     };
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk

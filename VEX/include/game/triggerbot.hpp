@@ -4,10 +4,10 @@
 #include <include/render/render.hpp>
 #include <include/game/engine/game_engine.hpp>
 
-namespace vex::game::triggerbot {
+namespace sky::game::triggerbot {
 
-	using namespace vex::game::engine;
-	using namespace vex::game::sdk;
+	using namespace sky::game::engine;
+	using namespace sky::game::sdk;
 
 	struct BoneMap {
 		int head, neck, chest;
@@ -33,8 +33,8 @@ namespace vex::game::triggerbot {
 		
 		float DistanceBetweenCross(float X, float Y)
 		{
-			float xdist = X - (float)(vex::render::m_render->Width / 2.0f);
-			float ydist = Y - (float)(vex::render::m_render->Height / 2.0f);
+			float xdist = X - (float)(sky::render::m_render->Width / 2.0f);
+			float ydist = Y - (float)(sky::render::m_render->Height / 2.0f);
 
 			// Return Euclidean distance
 			return sqrtf((xdist * xdist) + (ydist * ydist));
@@ -43,8 +43,8 @@ namespace vex::game::triggerbot {
 		// Optimized version without sqrt for comparisons
 		float DistanceSquaredBetweenCross(float X, float Y)
 		{
-			float xdist = X - (float)(vex::render::m_render->Width / 2.0f);
-			float ydist = Y - (float)(vex::render::m_render->Height / 2.0f);
+			float xdist = X - (float)(sky::render::m_render->Width / 2.0f);
+			float ydist = Y - (float)(sky::render::m_render->Height / 2.0f);
 
 			// Return squared distance (faster for comparisons)
 			return (xdist * xdist) + (ydist * ydist);
@@ -92,8 +92,8 @@ namespace vex::game::triggerbot {
 		
 		// Check if crosshair is near skeleton
 		bool IsNearSkeleton(const std::array<std::array<sdk::FVector2D, 2>, 16>& skeleton, float threshold) {
-			float crossX = (float)(vex::render::m_render->Width / 2.0f);
-			float crossY = (float)(vex::render::m_render->Height / 2.0f);
+			float crossX = (float)(sky::render::m_render->Width / 2.0f);
+			float crossY = (float)(sky::render::m_render->Height / 2.0f);
 			
 			for (const auto& line : skeleton) {
 				float dist = DistanceToLine(crossX, crossY, line[0].X, line[0].Y, line[1].X, line[1].Y);
@@ -112,7 +112,7 @@ namespace vex::game::triggerbot {
 			if(!var->config.triggerbot.enabled) {
 				return;
 			}
-			if(!vex::render::m_render->IsKeyPushing(var->config.triggerbot.key)) {
+			if(!sky::render::m_render->IsKeyPushing(var->config.triggerbot.key)) {
 				return;
 			}
 			
@@ -123,8 +123,8 @@ namespace vex::game::triggerbot {
 			
 			// Check if crosshair is near skeleton (2 pixel threshold)
 			if (IsNearSkeleton(skeleton, 2.0f)) {
-				vex::driver::g_driver->move_mouse(0, 0, 0x1); //Left mouse down
-				vex::driver::g_driver->move_mouse(0, 0, 0x2); //Left mouse up
+				sky::driver::g_driver->move_mouse(0, 0, 0x1); //Left mouse down
+				sky::driver::g_driver->move_mouse(0, 0, 0x2); //Left mouse up
 				
 				// Update last shot time
 				last_shot_time = std::chrono::steady_clock::now();
@@ -133,4 +133,4 @@ namespace vex::game::triggerbot {
 	};
 
 	std::shared_ptr<ITriggerbot> m_triggerbot = std::make_shared<ITriggerbot>();
-} // namespace vex::game::aimbot
+} // namespace sky::game::aimbot

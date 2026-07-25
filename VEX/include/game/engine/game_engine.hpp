@@ -22,7 +22,7 @@
 #include <include/utils/logger.hpp>
 #include <include/render/render.hpp>
 
-namespace vex::game::engine {
+namespace sky::game::engine {
 
     struct CameraCache {
         sdk::FVector LastValidLocation{};
@@ -102,10 +102,10 @@ namespace vex::game::engine {
 
         sdk::FVector2D ProjectWorldToScreen(sdk::FVector world_location);
 
-        bool inScreen(const vex::game::sdk::FVector2D& bone) {
+        bool inScreen(const sky::game::sdk::FVector2D& bone) {
             return bone.isValid() &&
-                bone.X > 0 && bone.X < vex::render::m_render->Width &&
-                bone.Y > 0 && bone.Y < vex::render::m_render->Height;
+                bone.X > 0 && bone.X < sky::render::m_render->Width &&
+                bone.Y > 0 && bone.Y < sky::render::m_render->Height;
         }
 
     private:
@@ -146,4 +146,4 @@ namespace vex::game::engine {
 
 	inline std::shared_ptr<GameEngine> m_game_engine = std::make_shared<GameEngine>();
 
-} // namespace vex::game::engine
+} // namespace sky::game::engine

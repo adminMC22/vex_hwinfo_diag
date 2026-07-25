@@ -4,10 +4,10 @@
 #include <include/render/render.hpp>
 #include <include/game/engine/game_engine.hpp>
 
-namespace vex::game::aimbot {
+namespace sky::game::aimbot {
 
-	using namespace vex::game::engine;
-	using namespace vex::game::sdk;
+	using namespace sky::game::engine;
+	using namespace sky::game::sdk;
 
 	struct BoneMap {
 		int head, neck, chest;
@@ -70,8 +70,8 @@ namespace vex::game::aimbot {
 
 		float DistanceBetweenCross(float X, float Y)
 		{
-			float xdist = X - (float)(vex::render::m_render->Width / 2.0f);
-			float ydist = Y - (float)(vex::render::m_render->Height / 2.0f);
+			float xdist = X - (float)(sky::render::m_render->Width / 2.0f);
+			float ydist = Y - (float)(sky::render::m_render->Height / 2.0f);
 
 			// Manually square the differences and take the square root.
 			float Hypotenuse = sqrtf((xdist * xdist) + (ydist * ydist));
@@ -100,7 +100,7 @@ namespace vex::game::aimbot {
 				return;
 			}
 
-			if (!vex::render::m_render->IsKeyPushing(var->config.aimbot.key)) {
+			if (!sky::render::m_render->IsKeyPushing(var->config.aimbot.key)) {
 				reset_target();
 				return;
 			}
@@ -183,7 +183,7 @@ namespace vex::game::aimbot {
 				return;
 			}
 
-			if (!vex::game::engine::m_cameraCache.HasValidCache)
+			if (!sky::game::engine::m_cameraCache.HasValidCache)
 			{
 				reset_target();
 				return;
@@ -192,17 +192,17 @@ namespace vex::game::aimbot {
 			auto CurrentRotation = m_game_engine->get_world_data().player_controller.ControlRotation();
 
 
-			auto AimRotation = CalculateAngles(vex::game::engine::m_cameraCache.LastValidLocation, selected_bone);
+			auto AimRotation = CalculateAngles(sky::game::engine::m_cameraCache.LastValidLocation, selected_bone);
 			sdk::FRotator SmoothedRotation;
 			if (var->config.aimbot.recoil > 0) {
 				sdk::FRotator ControlRotation = CurrentRotation;
-				FRotator DeltaRotation = vex::game::engine::m_cameraCache.LastValidRotation - ControlRotation;
+				FRotator DeltaRotation = sky::game::engine::m_cameraCache.LastValidRotation - ControlRotation;
 				DeltaRotation.Normalize();
 
 				FRotator ConvertRotation = AimRotation - (DeltaRotation * (double)var->config.aimbot.recoil);
 				ConvertRotation.Normalize();
 
-				DeltaRotation = ConvertRotation - vex::game::engine::m_cameraCache.LastValidRotation;
+				DeltaRotation = ConvertRotation - sky::game::engine::m_cameraCache.LastValidRotation;
 				DeltaRotation.Normalize();
 
 				SmoothedRotation = CurrentRotation + DeltaRotation / (double)var->config.aimbot.smooth;
@@ -219,4 +219,4 @@ namespace vex::game::aimbot {
 	};
 
 	std::shared_ptr<IAimbot> m_aimbot = std::make_shared<IAimbot>();
-} // namespace vex::game::aimbot
+} // namespace sky::game::aimbot

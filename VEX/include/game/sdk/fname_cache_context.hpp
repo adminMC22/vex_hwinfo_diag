@@ -2,7 +2,7 @@
 
 #include "fname_cache.hpp"
 
-namespace vex {
+namespace sky {
 namespace game {
 namespace sdk {
 
@@ -17,6 +17,6 @@ namespace sdk {
 
 } // namespace sdk
 } // namespace game
-} // namespace vex
+} // namespace sky
 
 

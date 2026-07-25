@@ -6,7 +6,7 @@
 #include "aplayer_state.hpp"
 #include "adamage_handler.hpp"
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
 	/**
 	 * @brief Class UVisibilityComponent
@@ -72,9 +72,9 @@ namespace vex::game::sdk {
 			auto mesh = Mesh();
             if (!mesh) return 0;
 
-            auto bone_count = vex::driver::g_driver->read<int32_t>(mesh + offsets::BoneArray + 0x8);
+            auto bone_count = sky::driver::g_driver->read<int32_t>(mesh + offsets::BoneArray + 0x8);
             if(!bone_count)
-				bone_count = vex::driver::g_driver->read<int32_t>(mesh + offsets::BoneArrayCache + 0x8);
+				bone_count = sky::driver::g_driver->read<int32_t>(mesh + offsets::BoneArrayCache + 0x8);
 
             return bone_count;
         }
@@ -85,18 +85,18 @@ namespace vex::game::sdk {
             auto mesh = Mesh();
             if (!mesh) return 0;
 
-			auto bone_array = vex::driver::g_driver->read<uintptr_t>(mesh + offsets::BoneArray);
+			auto bone_array = sky::driver::g_driver->read<uintptr_t>(mesh + offsets::BoneArray);
             if (!bone_array) 
-                return vex::driver::g_driver->read<uintptr_t>(mesh + offsets::BoneArrayCache);
+                return sky::driver::g_driver->read<uintptr_t>(mesh + offsets::BoneArrayCache);
 
 			return bone_array;
 		}
 
         FVector GetBoneWithRotation(uintptr_t mesh, uintptr_t bone_array, int32_t idx) const {
             if (!is_valid()) return {};
-			FTransform bone = vex::driver::g_driver->read<FTransform>(bone_array + (idx * 0x60));
+			FTransform bone = sky::driver::g_driver->read<FTransform>(bone_array + (idx * 0x60));
 
-            FTransform ComponentToWorld = vex::driver::g_driver->read<FTransform>(mesh + offsets::ComponentToWorld);
+            FTransform ComponentToWorld = sky::driver::g_driver->read<FTransform>(mesh + offsets::ComponentToWorld);
 
             FMatrix Matrix = bone.ToMatrixWithScale() * ComponentToWorld.ToMatrixWithScale();
             return FVector{ Matrix.WPlane.X, Matrix.WPlane.Y, Matrix.WPlane.Z };
@@ -109,7 +109,7 @@ namespace vex::game::sdk {
             if (!is_valid() || bone_indices.empty()) return result;
 
             // Ler ComponentToWorld uma vez
-            FTransform ComponentToWorld = vex::driver::g_driver->read<FTransform>(mesh + offsets::ComponentToWorld);
+            FTransform ComponentToWorld = sky::driver::g_driver->read<FTransform>(mesh + offsets::ComponentToWorld);
             
             // Find range of required bones
             int32_t min_idx = *std::min_element(bone_indices.begin(), bone_indices.end());
@@ -117,7 +117,7 @@ namespace vex::game::sdk {
             int32_t bone_count = max_idx - min_idx + 1;
 
             // Read all required bones at once
-            auto bones_batch = vex::driver::g_driver->read_array_batch<FTransform>(
+            auto bones_batch = sky::driver::g_driver->read_array_batch<FTransform>(
                 bone_array + (min_idx * 0x60), bone_count);
 
             if (bones_batch.size() != bone_count) return result;
@@ -151,7 +151,7 @@ namespace vex::game::sdk {
         APlayerState PlayerState() const {
             if (!is_valid()) return {};
 			
-			return vex::driver::g_driver->read<APlayerState>(m_base_address + offsets::PlayerState);
+			return sky::driver::g_driver->read<APlayerState>(m_base_address + offsets::PlayerState);
 		}
 
         bool wasAlly() const {
@@ -167,8 +167,8 @@ namespace vex::game::sdk {
         bool IsVisible(uintptr_t Mesh) const {
             if (!is_valid()) return {};
 
-            float lastRenderTime = vex::driver::g_driver->read<float>(Mesh + offsets::LastRenderTime);
-            float lastSubmitTime = vex::driver::g_driver->read<float>(Mesh + offsets::LastSubmitTime);
+            float lastRenderTime = sky::driver::g_driver->read<float>(Mesh + offsets::LastRenderTime);
+            float lastSubmitTime = sky::driver::g_driver->read<float>(Mesh + offsets::LastSubmitTime);
             float visionTick = lastRenderTime + 0.06f;
 
             auto minimap_comp = MinimapComponent();
@@ -182,10 +182,10 @@ namespace vex::game::sdk {
 			auto inventory = read<uintptr_t>(offsets::Inventory);
 
             if (!inventory) return {};
-			return vex::driver::g_driver->read<UObject>(inventory + offsets::CurrentEquippable);
+			return sky::driver::g_driver->read<UObject>(inventory + offsets::CurrentEquippable);
 		}
     };
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk
 
 

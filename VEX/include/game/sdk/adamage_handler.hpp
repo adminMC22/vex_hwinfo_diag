@@ -3,7 +3,7 @@
 #include "ue_object.hpp"
 #include "aplayer_state.hpp"
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     /**
     * @brief Class ADamageHandler
@@ -33,4 +33,4 @@ namespace vex::game::sdk {
             return read<int32_t>(offsets::ShieldType);
 		}
 	};
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk

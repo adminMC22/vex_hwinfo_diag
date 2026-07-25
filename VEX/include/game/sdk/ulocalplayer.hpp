@@ -4,7 +4,7 @@
 #include "aplayer_controller.hpp"
 #include <vector>
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     /**
      * @brief Class ULocalPlayer - Represents a local player in UE5
@@ -27,4 +27,4 @@ namespace vex::game::sdk {
         void print_debug() const;
     };
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk

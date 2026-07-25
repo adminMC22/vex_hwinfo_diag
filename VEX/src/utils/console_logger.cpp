@@ -6,7 +6,7 @@
 #include <windows.h>
 #include <mutex>
 
-namespace vex::utils {
+namespace sky::utils {
 
     class ConsoleLogger : public ILogger {
     public:
@@ -105,4 +105,4 @@ namespace vex::utils {
         }
     }
 
-} // namespace vex::utils
+} // namespace sky::utils

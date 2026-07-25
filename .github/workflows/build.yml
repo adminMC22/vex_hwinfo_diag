@@ -1,4 +1,4 @@
-name: Build VEX.exe
+name: Build Sky.exe
 
 on:
   push:
@@ -21,14 +21,14 @@ jobs:
     - name: Build
       working-directory: ${{ github.workspace }}
       run: |
-        MSBuild.exe VEX.sln /p:Configuration=Release /p:Platform=x64 /nologo /v:normal 2>&1
+        MSBuild.exe Sky.sln /p:Configuration=Release /p:Platform=x64 /nologo /v:normal 2>&1
       env:
         PreferredToolArchitecture: x64
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: VEX.exe
-        path: x64/Release/VEX.exe
+        name: Sky.exe
+        path: x64/Release/Sky.exe
         compression-level: 0
         if-no-files-found: error

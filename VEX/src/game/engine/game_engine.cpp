@@ -5,9 +5,9 @@
 #include <include/utils/logger.hpp>
 #include <include/game/sdk/fname_cache_context.hpp>
 
-namespace vex::game::engine {
-    using namespace vex::utils;
-	using namespace vex::render;
+namespace sky::game::engine {
+    using namespace sky::utils;
+	using namespace sky::render;
 
     GameEngine::GameEngine() {
     }
@@ -94,22 +94,22 @@ namespace vex::game::engine {
     }
 
     bool GameEngine::set_target_process(const std::wstring& process_name) {
-        if (!vex::driver::g_driver) {
+        if (!sky::driver::g_driver) {
             return false;
         }
 
-        if (!vex::driver::g_driver->attach_process(process_name)) {
+        if (!sky::driver::g_driver->attach_process(process_name)) {
             return false;
         }
         return true;
     }
 
     bool GameEngine::set_target_process(uint32_t process_id) {
-        if (!vex::driver::g_driver) {
+        if (!sky::driver::g_driver) {
             return false;
         }
 
-        if (!vex::driver::g_driver->attach_process(process_id)) {
+        if (!sky::driver::g_driver->attach_process(process_id)) {
             return false;
         }
         return true;
@@ -151,9 +151,9 @@ namespace vex::game::engine {
         auto pml4 = m_vgk->find_pml4_base();
         auto offset = m_uworld_offset.load();
         if (offset) {
-            vex::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
+            sky::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
             m_needs_refresh.store(false);
-            auto world_ptr = vex::driver::g_driver->read<uintptr_t>(pml4.PML4Base + offset);
+            auto world_ptr = sky::driver::g_driver->read<uintptr_t>(pml4.PML4Base + offset);
             if(!world_ptr) {
                 m_uworld_offset.store(0);
                 m_needs_refresh.store(true);
@@ -162,11 +162,11 @@ namespace vex::game::engine {
         }
 
         if (!m_needs_refresh.load()) {
-            vex::driver::g_driver->set_dir_base((void*)0);
-            auto base = vex::driver::g_driver->get_base_address();
-            auto world = vex::driver::g_driver->read<uintptr_t>(base + offsets::GWorld);
-            auto world_ptr = vex::driver::g_driver->read<uintptr_t>(world);
-            auto persistent_level = vex::driver::g_driver->read<uintptr_t>(world_ptr + offsets::PersistentLevel);
+            sky::driver::g_driver->set_dir_base((void*)0);
+            auto base = sky::driver::g_driver->get_base_address();
+            auto world = sky::driver::g_driver->read<uintptr_t>(base + offsets::GWorld);
+            auto world_ptr = sky::driver::g_driver->read<uintptr_t>(world);
+            auto persistent_level = sky::driver::g_driver->read<uintptr_t>(world_ptr + offsets::PersistentLevel);
             if (persistent_level == world_ptr || !persistent_level) {
                 m_needs_refresh.store(true);
             }
@@ -176,15 +176,15 @@ namespace vex::game::engine {
         }
 
         if (m_needs_refresh.load()) {
-            vex::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
+            sky::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
             for (int i = 0; i < 0x1000; i += 8) {
-                const auto world_ptr = vex::driver::g_driver->read<uintptr_t>(pml4.PML4Base + i);
+                const auto world_ptr = sky::driver::g_driver->read<uintptr_t>(pml4.PML4Base + i);
                 if (!world_ptr) continue;
 
-                const auto lvl = vex::driver::g_driver->read<uintptr_t>(world_ptr + offsets::PersistentLevel);
+                const auto lvl = sky::driver::g_driver->read<uintptr_t>(world_ptr + offsets::PersistentLevel);
                 if (!lvl || lvl == world_ptr) continue;
 
-                const auto owning_world = vex::driver::g_driver->read<uintptr_t>(lvl + offsets::OwningWord);
+                const auto owning_world = sky::driver::g_driver->read<uintptr_t>(lvl + offsets::OwningWord);
                 if (owning_world == world_ptr) {
                     m_uworld_offset.store(i);
                     m_needs_refresh.store(false);
@@ -249,7 +249,7 @@ namespace vex::game::engine {
             new_data.world = sdk::UWorld(world_addr);
             //printf("name: %s\n", new_data.world.get_name_string().c_str());
             if (m_last_world_addr != world_addr) {
-                vex::game::sdk::reset_global_fname_cache();
+                sky::game::sdk::reset_global_fname_cache();
                 m_last_world_addr = world_addr;
             }
 
@@ -758,4 +758,4 @@ std::string GameEngine::GetSkillName(std::string name) const {
         return skill_patterns[name]; // Returns empty string if not found
     }
 
-} // namespace vex::game::engine
+} // namespace sky::game::engine

@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * kill_switch.hpp — Emergency kill switch for VEX
+ * kill_switch.hpp — Emergency kill switch for Sky
  *
  * No driver to unload — the cheat just uses HWiNFO's existing device.
  * F10 = close the device handle, wipe logs, exit.
@@ -22,9 +22,9 @@
 #include "driver/driver_context.hpp"
 #include "utils/logger.hpp"
 
-namespace vex::security {
+namespace sky::security {
 
-    // KillSwitch uses vex::driver::g_hwinfo_device from driver_context.hpp
+    // KillSwitch uses sky::driver::g_hwinfo_device from driver_context.hpp
 
     struct KillSwitchConfig {
         int panic_key = VK_F10;           // Panic hotkey
@@ -87,10 +87,10 @@ namespace vex::security {
             LOG_WARNING("[KillSwitch] === EMERGENCY PANIC ===");
 
             // 1. Close HWiNFO device handle
-            if (vex::driver::g_hwinfo_device != INVALID_HANDLE_VALUE) {
+            if (sky::driver::g_hwinfo_device != INVALID_HANDLE_VALUE) {
                 LOG_INFO("[KillSwitch] Closing HWiNFO device handle...");
-                CloseHandle(vex::driver::g_hwinfo_device);
-                vex::driver::g_hwinfo_device = INVALID_HANDLE_VALUE;
+                CloseHandle(sky::driver::g_hwinfo_device);
+                sky::driver::g_hwinfo_device = INVALID_HANDLE_VALUE;
             }
 
             // 2. Wipe logs
@@ -125,7 +125,7 @@ namespace vex::security {
 
         static void WipeLogs() {
             SetConsoleTitleA("");
-            DeleteFileA("VEX.log");
+            DeleteFileA("Sky.log");
             DeleteFileA("debug.log");
         }
     };
@@ -133,4 +133,4 @@ namespace vex::security {
     // Global kill switch instance
     inline KillSwitch g_killSwitch;
 
-} // namespace vex::security
+} // namespace sky::security

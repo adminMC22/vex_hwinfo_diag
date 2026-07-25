@@ -5,7 +5,7 @@
 #include "../driver/idriver.hpp"
 #include "../game/vgk_system.hpp"
 
-namespace vex::core {
+namespace sky::core {
 
     /**
      * @brief Abstract interface for the main application
@@ -33,4 +33,4 @@ namespace vex::core {
         virtual void stop() = 0;
     };
 
-} // namespace vex::core
+} // namespace sky::core

@@ -1,5 +1,5 @@
 =========================================================
- VEX + HWiNFO64 -- BUILD & OFFSET SETUP
+ Sky + HWiNFO64 -- BUILD & OFFSET SETUP
 =========================================================
 
 PREREQUISITES:
@@ -12,8 +12,8 @@ PREREQUISITES:
 
 1. Run extract_hwinfo.bat (downloads HWiNFO, extracts .sys)
 2. Or manually: download from https://www.hwinfo.com/files/hwi_850.zip
-   and extract hwinfo64.sys to VEX/driver/
-3. Run: python bin2h.py VEX/driver/hwinfo64.sys VEX/include/driver/driver_data.h driver_bytes
+   and extract hwinfo64.sys to Sky/driver/
+3. Run: python bin2h.py Sky/driver/hwinfo64.sys Sky/include/driver/driver_data.h driver_bytes
    This embeds the .sys binary into the header
 
 =========================================================
@@ -26,10 +26,10 @@ Here is how to get working ones:
 METHOD A -- From UnknownCheats (recommended):
   1. Go to unknowncheats.me > Valorant section
   2. Find the offsets thread (usually stickied or recently updated)
-  3. Copy the hex values into VEX/offsets.json
+  3. Copy the hex values into Sky/offsets.json
   4. Run on Windows: powershell -ExecutionPolicy Bypass .\upload_offsets.ps1
   5. This uploads to paste.c-net.org and copies the URL to clipboard
-  6. Open VEX/include/utils/CurlSetup.hpp
+  6. Open Sky/include/utils/CurlSetup.hpp
   7. Replace "yourpasteid" with the ID from the URL
   8. Recompile
 
@@ -49,7 +49,7 @@ IMPORTANT: The offset_loader.cpp reads ALL offsets from the JSON.
  STEP 3: BUILD
 =========================================================
 
-1. Open VEX.sln in Visual Studio 2022
+1. Open Sky.sln in Visual Studio 2022
 2. Set to Release x64
 3. Build Solution (Ctrl+Shift+B)
 

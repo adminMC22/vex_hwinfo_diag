@@ -4,7 +4,7 @@
 #include <include/game/sdk/sdk.hpp>
 #include <include/game/lineups_data.hpp>
 
-namespace vex::game::lineups {
+namespace sky::game::lineups {
 
     /**
      * @brief Structure representing a game lineup
@@ -56,7 +56,7 @@ namespace vex::game::lineups {
          * @return Nearest lineup or std::nullopt if not found
          */
         std::optional<Lineup> get_nearest_lineup(
-            const vex::game::sdk::FVector& current_position,
+            const sky::game::sdk::FVector& current_position,
             const std::string& agent_name,
             const std::string& map_name,
             const std::string& weapon_name,
@@ -93,10 +93,10 @@ namespace vex::game::lineups {
          * @param pos2 Second position
          * @return Euclidean distance
          */
-        double calculate_distance(const vex::game::sdk::FVector& pos1, const vex::game::sdk::FVector& pos2) const;
+        double calculate_distance(const sky::game::sdk::FVector& pos1, const sky::game::sdk::FVector& pos2) const;
     };
 
     // Global instance of the lineups manager
     extern std::unique_ptr<LineupsManager> g_lineups;
 
-} // namespace vex::game::lineups
+} // namespace sky::game::lineups

@@ -2,9 +2,9 @@
 #include <include/game/lineups.hpp>
 #include <include/utils/logger.hpp>
 
-namespace vex::game::lineups {
+namespace sky::game::lineups {
 
-    using namespace vex::utils;
+    using namespace sky::utils;
 
     LineupsManager::LineupsManager() {
     }
@@ -71,7 +71,7 @@ namespace vex::game::lineups {
     }
 
     std::optional<Lineup> LineupsManager::get_nearest_lineup(
-        const vex::game::sdk::FVector& current_position,
+        const sky::game::sdk::FVector& current_position,
         const std::string& agent_name,
         const std::string& map_name,
         const std::string& weapon_name,
@@ -85,7 +85,7 @@ namespace vex::game::lineups {
                 lineup.map == map_name &&
                 lineup.weapon == weapon_name) {
 
-                vex::game::sdk::FVector lineup_position{
+                sky::game::sdk::FVector lineup_position{
                     static_cast<float>(lineup.position_x),
                     static_cast<float>(lineup.position_y),
                     static_cast<float>(lineup.position_z)
@@ -120,7 +120,7 @@ namespace vex::game::lineups {
         return count;
     }
 
-    double LineupsManager::calculate_distance(const vex::game::sdk::FVector& pos1, const vex::game::sdk::FVector& pos2) const {
+    double LineupsManager::calculate_distance(const sky::game::sdk::FVector& pos1, const sky::game::sdk::FVector& pos2) const {
         double dx = pos1.X - pos2.X;
         double dy = pos1.Y - pos2.Y;
         double dz = pos1.Z - pos2.Z;
@@ -130,4 +130,4 @@ namespace vex::game::lineups {
     // Global instance
     std::unique_ptr<LineupsManager> g_lineups = std::make_unique<LineupsManager>();
 
-} // namespace vex::game::lineups
+} // namespace sky::game::lineups

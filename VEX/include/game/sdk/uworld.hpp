@@ -8,7 +8,7 @@
 #include "ulevel.hpp"
 #include "ugame_instance.hpp"
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     /**
      * @brief Class UWorld
@@ -35,4 +35,4 @@ namespace vex::game::sdk {
 		}
     };
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk

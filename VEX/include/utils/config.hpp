@@ -4,7 +4,7 @@
 #include <map>
 #include <memory>
 
-namespace vex::utils {
+namespace sky::utils {
 
     /**
      * @brief Supported configuration types
@@ -117,4 +117,4 @@ namespace vex::utils {
     // Global configuration
     extern std::shared_ptr<IConfigManager> g_config;
 
-} // namespace vex::utils
+} // namespace sky::utils

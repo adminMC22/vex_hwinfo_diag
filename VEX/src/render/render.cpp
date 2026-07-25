@@ -4,7 +4,7 @@
 // Win32 helper for ImGui backend
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-namespace vex::render {
+namespace sky::render {
 
     RENDER::~RENDER() {
 		shutdown();
@@ -40,28 +40,37 @@ namespace vex::render {
 
         do
         {
-            hWnd = FindWindowA(0, xorstr_("Medal Overlay"));
+            // Try Valorant game window first (Unreal Engine window)
+            hWnd = FindWindowA(xorstr_("UnrealWindow"), xorstr_("VALORANT  "));
             if (hWnd)
                 break;
 
-            hWnd = FindWindowA(xorstr_("Qt5QWindowToolTipSaveBits"), xorstr_("Icecream Screen Recorder"));
+            // Fallback: any Unreal Engine window
+            hWnd = FindWindowA(xorstr_("UnrealWindow"), nullptr);
             if (hWnd)
                 break;
 
-            hWnd = FindWindowA(0, xorstr_("RecBackgroundForm"));
-            if (hWnd)
-                break;
+            // Last resort: create our own transparent overlay window
+            WNDCLASSEXA wc = { sizeof(WNDCLASSEXA) };
+            wc.style = CS_HREDRAW | CS_VREDRAW;
+            wc.lpfnWndProc = DefWindowProcA;
+            wc.hInstance = GetModuleHandleA(nullptr);
+            wc.lpszClassName = xorstr_("SkyOverlay");
+            RegisterClassExA(&wc);
 
-            hWnd = FindWindowA(0, xorstr_("CrosshairX"));
-            if (hWnd)
-                break;
-
+            hWnd = CreateWindowExA(
+                WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+                xorstr_("SkyOverlay"), xorstr_("Sky"),
+                WS_POPUP,
+                0, 0, (int)Width, (int)Height,
+                nullptr, nullptr, wc.hInstance, nullptr
+            );
         } while (false);
 
         if (!hWnd) {
-			MessageBoxA(0, xorstr_("Failed to find target window. Need to have one of the following apps running:\n\n- NVIDIA GeForce Experience Overlay\n- Medal.tv\n- Icecream Screen Recorder\n- Xbox Game Bar\n- APowerRec"), xorstr_("Error"), MB_OK | MB_ICONERROR);
+            MessageBoxA(0, xorstr_("Failed to create overlay window."), xorstr_("Error"), MB_OK | MB_ICONERROR);
             ExitProcess(0);
-			return false;
+            return false;
         }
 
         SetMenu(hWnd, 0);
@@ -216,4 +225,4 @@ namespace vex::render {
 		io.AddMouseButtonEvent(4, (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0);
 	}
 
-} // namespace vex::ui
+} // namespace sky::ui

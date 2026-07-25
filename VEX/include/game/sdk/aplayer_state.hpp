@@ -2,7 +2,7 @@
 
 #include "ue_object.hpp"
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     class APlayerState : public UObject {
     public:
@@ -18,7 +18,7 @@ namespace vex::game::sdk {
             if (!is_valid()) return -1;
 			auto team_component = TeamComponent();
             if (team_component == 0) return 0;
-			return vex::driver::g_driver->read<int32_t>(team_component + offsets::TeamID);
+			return sky::driver::g_driver->read<int32_t>(team_component + offsets::TeamID);
         }
     };
 }

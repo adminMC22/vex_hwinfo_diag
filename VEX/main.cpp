@@ -1,5 +1,5 @@
 #include "include/common.hpp"
-#include "include/vex.hpp"
+#include "include/sky.hpp"
 #include "src/utils/console_logger.cpp"
 #include "src/utils/memory_config.cpp"
 #include "src/game/lineups.cpp"
@@ -12,11 +12,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     freopen("CONOUT$", "w", stderr);*/
 
     // Initialize logger after console allocation
-    vex::utils::initialize_logger(vex::utils::LogLevel::DEBUG);
+    sky::utils::initialize_logger(sky::utils::LogLevel::DEBUG);
 
     try {
         // Create and initialize application
-        auto app = vex::core::create_application();
+        auto app = sky::core::create_application();
         if (!app) {
             return -1;
         }

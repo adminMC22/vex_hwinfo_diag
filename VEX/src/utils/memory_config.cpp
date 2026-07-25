@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <sstream>
 
-namespace vex::utils {
+namespace sky::utils {
 
     /**
      * @brief In-memory configuration manager implementation
@@ -132,4 +132,4 @@ namespace vex::utils {
     // Global configuration
     std::shared_ptr<IConfigManager> g_config = ConfigManagerFactory::create_memory_config();
 
-} // namespace vex::utils
+} // namespace sky::utils

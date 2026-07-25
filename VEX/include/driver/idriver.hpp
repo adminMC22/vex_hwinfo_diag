@@ -7,7 +7,7 @@
 #include <vector>
 #include <Windows.h>
 
-namespace vex::driver {
+namespace sky::driver {
 
     // Forward declarations
     struct MemoryAllocation;
@@ -121,4 +121,4 @@ namespace vex::driver {
      */
     std::shared_ptr<IDriver> create_driver();
 
-} // namespace vex::driver
+} // namespace sky::driver

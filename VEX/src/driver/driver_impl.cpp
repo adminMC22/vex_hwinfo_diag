@@ -14,7 +14,7 @@
 
 #pragma comment(lib, "ntdll.lib")
 
-namespace vex::driver {
+namespace sky::driver {
 
     // ---- HWiNFO64 device interface ----
     //
@@ -315,4 +315,4 @@ namespace vex::driver {
         return std::make_shared<HWiNFODriver>();
     }
 
-} // namespace vex::driver
+} // namespace sky::driver

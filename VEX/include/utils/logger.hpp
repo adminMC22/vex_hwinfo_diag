@@ -4,7 +4,7 @@
 #include <memory>
 #include <format>
 
-namespace vex::utils {
+namespace sky::utils {
 
     /**
      * @brief Available log levels
@@ -57,11 +57,11 @@ namespace vex::utils {
     void set_global_log_level(LogLevel level);
 
     // Convenience macros
-    #define LOG_TRACE(msg) if (vex::utils::g_logger) vex::utils::g_logger->trace(msg)
-    #define LOG_DEBUG(msg) if (vex::utils::g_logger) vex::utils::g_logger->debug(msg)
-    #define LOG_INFO(msg) if (vex::utils::g_logger) vex::utils::g_logger->info(msg)
-    #define LOG_WARNING(msg) if (vex::utils::g_logger) vex::utils::g_logger->warning(msg)
-    #define LOG_ERROR(msg) if (vex::utils::g_logger) vex::utils::g_logger->error(msg)
-    #define LOG_FATAL(msg) if (vex::utils::g_logger) vex::utils::g_logger->fatal(msg)
+    #define LOG_TRACE(msg) if (sky::utils::g_logger) sky::utils::g_logger->trace(msg)
+    #define LOG_DEBUG(msg) if (sky::utils::g_logger) sky::utils::g_logger->debug(msg)
+    #define LOG_INFO(msg) if (sky::utils::g_logger) sky::utils::g_logger->info(msg)
+    #define LOG_WARNING(msg) if (sky::utils::g_logger) sky::utils::g_logger->warning(msg)
+    #define LOG_ERROR(msg) if (sky::utils::g_logger) sky::utils::g_logger->error(msg)
+    #define LOG_FATAL(msg) if (sky::utils::g_logger) sky::utils::g_logger->fatal(msg)
 
-} // namespace vex::utils
+} // namespace sky::utils

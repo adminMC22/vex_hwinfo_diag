@@ -6,8 +6,8 @@
 #include "../../include/driver/idriver.hpp"
 #include <intrin.h>
 
-namespace vex::game {
-    using namespace vex::utils;  // To use LOG_* directly
+namespace sky::game {
+    using namespace sky::utils;  // To use LOG_* directly
 
 	uintptr_t VGK::decrypt_cloned_cr3_simplified(uintptr_t cloned_cr3)
 	{
@@ -22,9 +22,9 @@ namespace vex::game {
 	}
 
 	ShadowData VGK::find_pml4_base() {
-		ShadowRegionsDataStructure data = vex::driver::g_driver->read<ShadowRegionsDataStructure>(vex::driver::g_driver->get_kernel_base("vgk.sys") + offsets::vgk::ShadowRegions);
+		ShadowRegionsDataStructure data = sky::driver::g_driver->read<ShadowRegionsDataStructure>(sky::driver::g_driver->get_kernel_base("vgk.sys") + offsets::vgk::ShadowRegions);
 		if (!data.OriginalPML4_t || !data.ClonedPML4_t) {
-			data = vex::driver::g_driver->read<ShadowRegionsDataStructure>(vex::driver::g_driver->get_kernel_base("vgk.sys") + offsets::old_vgk::ShadowRegions);
+			data = sky::driver::g_driver->read<ShadowRegionsDataStructure>(sky::driver::g_driver->get_kernel_base("vgk.sys") + offsets::old_vgk::ShadowRegions);
 		}
 		auto decypted_cloned_cr3 = this->decrypt();
 		return { decypted_cloned_cr3, data.FreeIndex << 0x27 };
@@ -39,18 +39,18 @@ namespace vex::game {
 	uintptr_t VGK::decrypt() {
 		try
 		{
-			auto base = vex::driver::g_driver->get_kernel_base(xorstr_("vgk.sys"));
+			auto base = sky::driver::g_driver->get_kernel_base(xorstr_("vgk.sys"));
 			if(!base) {
 				return 0;
 			}
 
-			auto byte = vex::driver::g_driver->read<uint8_t>(base + offsets::vgk::ShadowRegionB);
+			auto byte = sky::driver::g_driver->read<uint8_t>(base + offsets::vgk::ShadowRegionB);
 			if(!byte) {
-				byte = vex::driver::g_driver->read<uint8_t>(base + offsets::old_vgk::ShadowRegionB);
+				byte = sky::driver::g_driver->read<uint8_t>(base + offsets::old_vgk::ShadowRegionB);
 			}
-			auto key = vex::driver::g_driver->read<uintptr_t>(base + offsets::vgk::ShadowRegionQ);
+			auto key = sky::driver::g_driver->read<uintptr_t>(base + offsets::vgk::ShadowRegionQ);
 			if(!key) {
-				key = vex::driver::g_driver->read<uintptr_t>(base + offsets::old_vgk::ShadowRegionQ);
+				key = sky::driver::g_driver->read<uintptr_t>(base + offsets::old_vgk::ShadowRegionQ);
 			}
 
 			auto _RAX = cpuid_rax();
@@ -119,4 +119,4 @@ namespace vex::game {
 		}
 	}
 
-} // namespace vex::game
+} // namespace sky::game

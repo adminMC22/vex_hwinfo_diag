@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @brief Main VEX system header
+ * @brief Main Sky system header
  * 
  * This header includes all public system interfaces, providing access to all main functionality.
  * 

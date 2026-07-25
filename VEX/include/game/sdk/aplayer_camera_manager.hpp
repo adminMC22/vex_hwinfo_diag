@@ -2,7 +2,7 @@
 
 #include "ue_object.hpp"
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     class APlayerCameraManager : public UObject {
     public:
@@ -20,6 +20,6 @@ namespace vex::game::sdk {
         // Specific methods may be added as known offsets are found
     };
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk
 
 

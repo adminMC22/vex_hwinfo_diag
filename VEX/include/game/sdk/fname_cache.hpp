@@ -6,7 +6,7 @@
 #include <chrono>
 #include <optional>
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     class FNameCache {
     public:
@@ -62,6 +62,6 @@ namespace vex::game::sdk {
         mutable std::mutex m_mutex;
     };
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk
 
 

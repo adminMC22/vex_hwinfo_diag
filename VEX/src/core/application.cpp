@@ -13,9 +13,9 @@
 
 #pragma comment(lib, "winmm.lib")
 
-namespace vex::core {
-    using namespace vex::utils;
-	using namespace vex::game::engine;
+namespace sky::core {
+    using namespace sky::utils;
+	using namespace sky::game::engine;
 
     /**
      * @brief Main application implementation - Manages UI, D3D and Engine
@@ -37,14 +37,16 @@ namespace vex::core {
                 }
 
                 // Create and initialize driver
-                vex::driver::g_driver = vex::driver::create_driver();
-                if (!vex::driver::g_driver) {
-					LOG_ERROR("Failed to create driver instance");
+                sky::driver::g_driver = sky::driver::create_driver();
+                if (!sky::driver::g_driver) {
+                    LOG_ERROR("Failed to create driver instance");
+                    MessageBoxA(0, xorstr_("Failed to create HWiNFO64 driver instance.\n\nMake sure HWiNFO64 is running.\nThis cheat uses HWiNFO64 as a sidecar driver."), xorstr_("Driver Error"), MB_OK | MB_ICONERROR);
                     return false;
                 }
 
-                if (!vex::driver::g_driver->setup()) {
+                if (!sky::driver::g_driver->setup()) {
                     LOG_WARNING("Failed to setup driver");
+                    MessageBoxA(0, xorstr_("Failed to setup HWiNFO64 driver.\n\nTry running HWiNFO64 first.\nIf it's running, the driver handle might be busy.\n\nClose HWiNFO64 and restart it, then try again."), xorstr_("Driver Error"), MB_OK | MB_ICONERROR);
                     return false;
                 }
 
@@ -52,13 +54,13 @@ namespace vex::core {
                 offsets::initialize();
 
                 // Arm the kill switch (panic on F10 or VGK scan)
-                vex::security::KillSwitchConfig ks_cfg;
+                sky::security::KillSwitchConfig ks_cfg;
                 ks_cfg.panic_key = VK_F10;
                 ks_cfg.auto_clean_driver = true;
                 ks_cfg.auto_wipe_logs = true;
                 ks_cfg.enable_vgk_monitor = true;
-                vex::security::g_killSwitch.arm(ks_cfg);
-                LOG_INFO("[VEX] Kill switch armed (F10)");
+                sky::security::g_killSwitch.arm(ks_cfg);
+                LOG_INFO("[Sky] Kill switch armed (F10)");
 
                 // Increase timer resolution to allow sleeps < 15.6ms
                 //timeBeginPeriod(1);
@@ -132,8 +134,8 @@ namespace vex::core {
         }
 
         void set_configuration(const std::string& config_name, const std::string& value) override {
-            if (vex::utils::g_config) {
-                vex::utils::g_config->set_value(config_name, vex::utils::ConfigValue(value));
+            if (sky::utils::g_config) {
+                sky::utils::g_config->set_value(config_name, sky::utils::ConfigValue(value));
             }
         }
 
@@ -159,7 +161,7 @@ namespace vex::core {
         }
 
     private:
-        vex::game::engine::ActorsData                   m_actors_data;
+        sky::game::engine::ActorsData                   m_actors_data;
 
         // Application state
         bool m_running;
@@ -168,10 +170,10 @@ namespace vex::core {
         bool initialize_configuration() {
             try {
                 // Default configurations
-                vex::utils::g_config->set_value(xorstr_("driver.service_name"), vex::utils::ConfigValue(xorstr_("gdrv_svc")));
-                vex::utils::g_config->set_value(xorstr_("driver.device_path_template"), vex::utils::ConfigValue(xorstr_("\\\\.\\{computer_name}")));
-                vex::utils::g_config->set_value(xorstr_("game.target_process"), vex::utils::ConfigValue(xorstr_("VALORANT-Win64-Shipping.exe")));
-                vex::utils::g_config->set_value(xorstr_("logging.level"), vex::utils::ConfigValue(xorstr_("INFO")));
+                sky::utils::g_config->set_value(xorstr_("driver.service_name"), sky::utils::ConfigValue(xorstr_("gdrv_svc")));
+                sky::utils::g_config->set_value(xorstr_("driver.device_path_template"), sky::utils::ConfigValue(xorstr_("\\\\.\\{computer_name}")));
+                sky::utils::g_config->set_value(xorstr_("game.target_process"), sky::utils::ConfigValue(xorstr_("VALORANT-Win64-Shipping.exe")));
+                sky::utils::g_config->set_value(xorstr_("logging.level"), sky::utils::ConfigValue(xorstr_("INFO")));
                 return true;
             }
             catch (const std::exception& e) {
@@ -183,7 +185,7 @@ namespace vex::core {
         bool initialize_lineups() {
             try {
 
-                if (!vex::game::lineups::g_lineups->load_lineups()) {
+                if (!sky::game::lineups::g_lineups->load_lineups()) {
                     LOG_ERROR("Failed to load lineups");
                     return false;
                 }
@@ -198,13 +200,13 @@ namespace vex::core {
 
         // Methods for graphics initialization (D3D + ImGui)
         bool initialize_graphics() {
-            return vex::render::m_render->init();
+            return sky::render::m_render->init();
         }
 
         void cleanup_graphics() {
-            if (vex::render::m_render) {
-                vex::render::m_render->shutdown();
-                vex::render::m_render.reset();
+            if (sky::render::m_render) {
+                sky::render::m_render->shutdown();
+                sky::render::m_render.reset();
             }
         }
 
@@ -221,8 +223,8 @@ namespace vex::core {
                 if (health <= 0.f)
                     continue;
 
-                vex::game::aimbot::m_aimbot->try_select_target(actor.actor, bones);
-				vex::game::triggerbot::m_triggerbot->run(actor.actor, bones, skeleton);
+                sky::game::aimbot::m_aimbot->try_select_target(actor.actor, bones);
+				sky::game::triggerbot::m_triggerbot->run(actor.actor, bones, skeleton);
 
                 // Calculate more precise model bounds
                 float HeadToNeck = bones[1].Y - bones[0].Y;
@@ -266,7 +268,7 @@ namespace vex::core {
                     // Unique ID for health bar animation (base + offset)
                     ImGuiID health_id = ImHashData(&base, sizeof(base)) + 1;
 
-                    vex::render::m_render->HorizontalHealthBar(
+                    sky::render::m_render->HorizontalHealthBar(
                         healthBarX, healthBarY, healthBarWidth, healthBarHeight,
                         health, 100, health_id
                     );
@@ -275,7 +277,7 @@ namespace vex::core {
                 // --- Box ---
                 if (var->config.esp.box && hasHead && hasNeck && hasFeet && hasShoulders) {
                     ImGuiID box_id = ImHashData(&base, sizeof(base)) + 2;
-                    vex::render::m_render->CorneredBox(
+                    sky::render::m_render->CorneredBox(
                         ImVec2(centerX, pBottom), pWidth, pTop, pBottom,
                         IM_COL32(color[0] * 255.f, color[1] * 255.f, color[2] * 255.f, color[3] * 255.f),
                         1.0f, true, health, box_id, 3.0f
@@ -286,7 +288,7 @@ namespace vex::core {
                 if (var->config.esp.skeleton) {
                     for (const auto& skel : skeleton) {
                         if (m_game_engine->inScreen(skel[0]) && m_game_engine->inScreen(skel[1])) {
-                            vex::render::m_render->DrawSkeletonLine(
+                            sky::render::m_render->DrawSkeletonLine(
                                 ImVec2(skel[0].X, skel[0].Y), ImVec2(skel[1].X, skel[1].Y),
                                 IM_COL32(color[0] * 255.f, color[1] * 255.f, color[2] * 255.f, color[3] * 255.f),
                                 1.5f,
@@ -299,7 +301,7 @@ namespace vex::core {
 				// --- Head Circle ---
                 if (var->config.esp.head) {
                     if (hasHead) {
-                        vex::render::m_render->DrawCircleFilled(
+                        sky::render::m_render->DrawCircleFilled(
                             ImVec2(bones[0].X, bones[0].Y),
                             3.5f,
                             IM_COL32(color[0] * 255.f, color[1] * 255.f, color[2] * 255.f, color[3] * 255.f),
@@ -311,7 +313,7 @@ namespace vex::core {
                 // --- Lines ---
                 if (var->config.esp.lines && hasFeet && hasShoulders) {
                     ImVec2 feet_center = ImVec2(centerX, pBottom);
-                    vex::render::m_render->DrawTracerLine(
+                    sky::render::m_render->DrawTracerLine(
                         feet_center,
                         IM_COL32(color[0] * 255.f, color[1] * 255.f, color[2] * 255.f, color[3] * 255.f),
                         1.0f
@@ -336,20 +338,20 @@ namespace vex::core {
 
                     // Add distance if configured
                     if (var->config.esp.distance && hasChest) {
-                        vex::game::sdk::FVector pos = actor.actor.GetBoneWithRotation(actor.mesh, actor.bone_array, 8);
+                        sky::game::sdk::FVector pos = actor.actor.GetBoneWithRotation(actor.mesh, actor.bone_array, 8);
                         auto distance = camera_view.Location.Distance(pos) / 100.0;
                         int rounded_distance = (int)std::round(distance);
                         display_name = std::format("[{}m] {}", rounded_distance, actor.name);
                     }
 
                     // Draw name (with or without distance) centered
-                    vex::render::m_render->DrawPlayerName(
+                    sky::render::m_render->DrawPlayerName(
                         ImVec2(centerX, nameY), display_name,
                         IM_COL32(color[0] * 255.f, color[1] * 255.f, color[2] * 255.f, color[3] * 255.f)
                     );
                 }
             }
-            vex::game::aimbot::m_aimbot->run();
+            sky::game::aimbot::m_aimbot->run();
         }
 
         ImU32 draw_spike_timer_bar(double time_remaining, double defuse_progress, int32_t defuse_section) {
@@ -482,7 +484,7 @@ namespace vex::core {
 
         void draw_lineups() {
             // Demonstrate lineup system usage
-            if (!vex::game::lineups::g_lineups->has_lineups()) {
+            if (!sky::game::lineups::g_lineups->has_lineups()) {
                 return;
             }
 
@@ -490,10 +492,10 @@ namespace vex::core {
 
             // Get current player position
             auto camera_view = world_data.player_camera_manager.get_camera_view();
-            vex::game::sdk::FVector player_position = camera_view.Location;
+            sky::game::sdk::FVector player_position = camera_view.Location;
 
             // Get all lineups for current agent
-            auto lineups = vex::game::lineups::g_lineups->get_lineups(world_data.local_player_name, world_data.world.get_name_string(), world_data.acknowledged_pawn.CurrentEquippable().get_name_string());
+            auto lineups = sky::game::lineups::g_lineups->get_lineups(world_data.local_player_name, world_data.world.get_name_string(), world_data.acknowledged_pawn.CurrentEquippable().get_name_string());
 
             // Maps to control vertical spacing of nearby lineups and tips
             std::map<std::pair<int, int>, int> position_offsets; // (screen_x, screen_y) -> offset_count for lineups
@@ -511,11 +513,11 @@ namespace vex::core {
             // Use same method as triggerbot to get screen center
             ImGuiIO& io = ImGui::GetIO();
             bool any_crosshair_near_aimpoint = false;
-            float crossX = (float)(vex::render::m_render->Width / 2.0f);
-            float crossY = (float)(vex::render::m_render->Height / 2.0f);
+            float crossX = (float)(sky::render::m_render->Width / 2.0f);
+            float crossY = (float)(sky::render::m_render->Height / 2.0f);
 
             for (const auto& lineup_check : lineups) {
-                vex::game::sdk::FVector lineup_pos_check{
+                sky::game::sdk::FVector lineup_pos_check{
                     static_cast<float>(lineup_check.position_x),
                     static_cast<float>(lineup_check.position_y),
                     static_cast<float>(lineup_check.position_z)
@@ -525,7 +527,7 @@ namespace vex::core {
                 double distance_meters_check = distance_units_check / 100.0;
                 if (distance_meters_check > 6.0 || distance_meters_check > 1.5) continue;
 
-                vex::game::sdk::FVector aim_point_check{
+                sky::game::sdk::FVector aim_point_check{
                     static_cast<float>(lineup_check.rotation_x),
                     static_cast<float>(lineup_check.rotation_y),
                     static_cast<float>(lineup_check.rotation_z)
@@ -547,7 +549,7 @@ namespace vex::core {
             // Draw all nearby lineups (within 6 meters)
             for (const auto& lineup : lineups) {
                 // Use same distance calculation method as players
-                vex::game::sdk::FVector lineup_pos{
+                sky::game::sdk::FVector lineup_pos{
                     static_cast<float>(lineup.position_x),
                     static_cast<float>(lineup.position_y),
                     static_cast<float>(lineup.position_z)
@@ -560,14 +562,14 @@ namespace vex::core {
                 if (distance_meters > 6.0) continue;
 
                 // Position where player should stand (position)
-                vex::game::sdk::FVector lineup_position{
+                sky::game::sdk::FVector lineup_position{
                     static_cast<float>(lineup.position_x),
                     static_cast<float>(lineup.position_y),
                     static_cast<float>(lineup.position_z)
                 };
 
                 // rotation_x, y, z is already where we need to aim (world 3D coordinates)
-                vex::game::sdk::FVector aim_point{
+                sky::game::sdk::FVector aim_point{
                     static_cast<float>(lineup.rotation_x),
                     static_cast<float>(lineup.rotation_y),
                     static_cast<float>(lineup.rotation_z)
@@ -606,7 +608,7 @@ namespace vex::core {
                             float angle = (float)i / (float)num_segments * 2.0f * 3.14159265359f;
 
                             // Calculate 3D position on circle (XY plane, Z fixed on ground)
-                            vex::game::sdk::FVector circle_point{
+                            sky::game::sdk::FVector circle_point{
                                 static_cast<float>(lineup.position_x + cos(angle) * radius_world),
                                 static_cast<float>(lineup.position_y + sin(angle) * radius_world),
                                 static_cast<float>(lineup.position_z - 100.0) // On ground
@@ -662,7 +664,7 @@ namespace vex::core {
                             (int)std::round(distance_meters)
                         );
 
-                        vex::render::m_render->DrawPlayerName(
+                        sky::render::m_render->DrawPlayerName(
                             ImVec2(lineup_screen_pos.X, lineup_screen_pos.Y + 10 + vertical_offset),
                             lineup_info,
                             IM_COL32(200, 255, 200, 255) // Light green
@@ -865,15 +867,15 @@ namespace vex::core {
             if (var->config.esp.spike && actors_data.timed_bomb.is_valid()) {
                 auto relative_location = actors_data.timed_bomb.RelativeLocation();
                 auto position = m_game_engine->ProjectWorldToScreen(relative_location);
-                double time_to_explode = vex::driver::g_driver->read<double>(actors_data.timed_bomb.get_base_address() + offsets::SpikeTimer);
-				double defuse_time = vex::driver::g_driver->read<double>(actors_data.timed_bomb.get_base_address() + offsets::SpikeDefuseProgress) * 100 / 6.984602;
-				int32_t defuse_section = vex::driver::g_driver->read<int32_t>(actors_data.timed_bomb.get_base_address() + offsets::DefuseSection);
+                double time_to_explode = sky::driver::g_driver->read<double>(actors_data.timed_bomb.get_base_address() + offsets::SpikeTimer);
+				double defuse_time = sky::driver::g_driver->read<double>(actors_data.timed_bomb.get_base_address() + offsets::SpikeDefuseProgress) * 100 / 6.984602;
+				int32_t defuse_section = sky::driver::g_driver->read<int32_t>(actors_data.timed_bomb.get_base_address() + offsets::DefuseSection);
 
                 // Draw timer bar in middle of screen and get progress color
                 ImU32 timer_color = draw_spike_timer_bar(time_to_explode, defuse_time, defuse_section);
 
                 if (m_game_engine->inScreen(position)) {
-					vex::render::m_render->DrawPlayerName(ImVec2(position.X, position.Y), std::format("Spike: {}s", (int)time_to_explode).c_str(), timer_color);
+					sky::render::m_render->DrawPlayerName(ImVec2(position.X, position.Y), std::format("Spike: {}s", (int)time_to_explode).c_str(), timer_color);
 				}
 			}
 
@@ -892,7 +894,7 @@ namespace vex::core {
                         var->config.esp.skills_color[2] * 255.f,
                         var->config.esp.skills_color[3] * 255.f);
 
-                    vex::render::m_render->DrawPlayerName(ImVec2(position.X, position.Y), actor.name.c_str(), color);
+                    sky::render::m_render->DrawPlayerName(ImVec2(position.X, position.Y), actor.name.c_str(), color);
                 }
             }
         }
@@ -909,13 +911,13 @@ namespace vex::core {
                         ExitProcess(0);
                     }
 
-                    if (vex::render::m_render) {
-                        vex::render::m_render->begin();
+                    if (sky::render::m_render) {
+                        sky::render::m_render->begin();
 
                         if (var->config.aimbot.draw_fov) {
                             // Draw FOV Circle
-                            vex::render::m_render->DrawCircle(
-                                ImVec2(vex::render::m_render->Width / 2, vex::render::m_render->Height / 2),
+                            sky::render::m_render->DrawCircle(
+                                ImVec2(sky::render::m_render->Width / 2, sky::render::m_render->Height / 2),
                                 var->config.aimbot.fov,
                                 IM_COL32(255, 255, 255, 255), // White color
                                 30, // Line thickness
@@ -927,7 +929,7 @@ namespace vex::core {
                         draw_skills();
                         draw_lineups();
 
-                        vex::render::m_render->end();
+                        sky::render::m_render->end();
                     }
                 }
                 catch (const std::exception& e) {
@@ -957,4 +959,4 @@ namespace vex::core {
         return std::make_shared<Application>();
     }
 
-} // namespace vex::core
+} // namespace sky::core

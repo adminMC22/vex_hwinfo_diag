@@ -4,7 +4,7 @@
 #include "../utils/logger.hpp"
 #include <chrono>
 
-namespace vex::utils {
+namespace sky::utils {
 
     /**
      * @brief Example demonstrating when to use each bone reading method
@@ -96,4 +96,4 @@ namespace vex::utils {
         }
     };
 
-} // namespace vex::utils
+} // namespace sky::utils

@@ -72,12 +72,12 @@
 #include <xorstr.hpp>
 #include <nlohmann/json.hpp>
 
-// ========== Basic VEX Project Headers ==========
+// ========== Basic Sky Project Headers ==========
 // Note: Specific headers should be included individually in .cpp files
 // to avoid circular dependencies
 
 // ========== Common namespace aliases ==========
-namespace vex {
+namespace sky {
     // Aliases for commonly used types
     using u8 = std::uint8_t;
     using u16 = std::uint16_t;
@@ -113,20 +113,20 @@ namespace vex {
 }
 
 // ========== Useful macros ==========
-#define VEX_UNUSED(x) ((void)(x))
-#define VEX_STRINGIFY(x) #x
-#define VEX_TOSTRING(x) VEX_STRINGIFY(x)
+#define SKY_UNUSED(x) ((void)(x))
+#define SKY_STRINGIFY(x) #x
+#define SKY_TOSTRING(x) SKY_STRINGIFY(x)
 
 #ifdef _DEBUG
-    #define VEX_DEBUG_ONLY(x) x
-    #define VEX_RELEASE_ONLY(x)
+    #define SKY_DEBUG_ONLY(x) x
+    #define SKY_RELEASE_ONLY(x)
 #else
-    #define VEX_DEBUG_ONLY(x)
-    #define VEX_RELEASE_ONLY(x) x
+    #define SKY_DEBUG_ONLY(x)
+    #define SKY_RELEASE_ONLY(x) x
 #endif
 
 // ========== Common forward declarations ==========
-namespace vex {
+namespace sky {
     namespace core {
         class Application;
     }

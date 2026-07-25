@@ -5,7 +5,7 @@
 #include <string>
 #include "../driver/idriver.hpp"
 
-namespace vex::game {
+namespace sky::game {
 
 struct ShadowData
 {
@@ -44,4 +44,4 @@ public:
 
 inline std::shared_ptr<VGK> m_vgk = std::make_shared<VGK>();
 
-} // namespace vex::game
+} // namespace sky::game

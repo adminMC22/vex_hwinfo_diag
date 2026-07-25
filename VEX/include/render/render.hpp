@@ -14,7 +14,7 @@
 #include <dxgi.h>
 #include <dwmapi.h>
 
-namespace vex::render {
+namespace sky::render {
 
 	class RENDER {
 	public:
@@ -528,6 +528,6 @@ namespace vex::render {
 
 	inline std::unique_ptr<RENDER> m_render = std::make_unique<RENDER>();
 
-} // namespace vex::ui
+} // namespace sky::ui
 
 

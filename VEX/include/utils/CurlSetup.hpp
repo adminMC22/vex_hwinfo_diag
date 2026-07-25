@@ -49,7 +49,7 @@ static bool try_winhttp(const wchar_t* url, std::string& output) {
 
     if (!WinHttpCrackUrl(url, 0, 0, &urlComp)) return false;
 
-    HINTERNET hSession = WinHttpOpen(L"VEX/1.0",
+    HINTERNET hSession = WinHttpOpen(L"Sky/1.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) return false;
 

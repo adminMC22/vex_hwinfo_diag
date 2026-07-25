@@ -3,7 +3,7 @@
 #include "../../../include/game/offsets.hpp"
 #include "../../../include/utils/logger.hpp"
 
-namespace vex::game::sdk {
-    using namespace vex::utils;  // To use LOG_* directly
+namespace sky::game::sdk {
+    using namespace sky::utils;  // To use LOG_* directly
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk

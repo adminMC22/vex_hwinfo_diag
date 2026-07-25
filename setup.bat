@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
-title VEX + HWiNFO64 - Build
+title Sky + HWiNFO64 - Build
 setlocal enabledelayedexpansion
 
 echo ==================================================
-echo   VEX + HWiNFO64 - BUILD (LLVM/ClangCL)
+echo   Sky + HWiNFO64 - BUILD (LLVM/ClangCL)
 echo ==================================================
 echo.
 echo NOTE: No driver embedding needed.
@@ -75,13 +75,13 @@ echo [+] MSBuild: %MSBUILD%
 :: Verify project files
 echo.
 echo [*] Verifying project files...
-if not exist "VEX.sln" (
-    echo [!] Missing: VEX.sln
+if not exist "Sky.sln" (
+    echo [!] Missing: Sky.sln
     pause
     exit /b 1
 )
-if not exist "VEX\main.cpp" (
-    echo [!] Missing: VEX\main.cpp
+if not exist "Sky\main.cpp" (
+    echo [!] Missing: Sky\main.cpp
     pause
     exit /b 1
 )
@@ -90,18 +90,18 @@ echo [+] All project files present
 :: Build
 echo.
 echo [*] Building with MSBuild (Release x64, ClangCL)...
-"%MSBUILD%" VEX.sln /p:Configuration=Release /p:Platform=x64 /nologo /v:q
+"%MSBUILD%" Sky.sln /p:Configuration=Release /p:Platform=x64 /nologo /v:q
 if %errorlevel% equ 0 (
     echo.
     echo ================================================
     echo   BUILD SUCCESSFUL
     echo ================================================
     echo.
-    echo Output: VEX\bin\Release\x64\VEX.exe
+    echo Output: Sky\bin\Release\x64\Sky.exe
     echo.
     echo HOW TO USE:
     echo   1. Run HWiNFO64.exe as Administrator
-    echo   2. Run VEX.exe as Administrator
+    echo   2. Run Sky.exe as Administrator
     echo   3. F10 = PANIC
     echo.
     echo Offsets: LIVE from internet on each launch.
@@ -111,7 +111,7 @@ if %errorlevel% equ 0 (
     echo     Common fixes:
     echo     - Make sure Clang toolset is installed (VS Installer)
     echo     - Make sure DirectX SDK is at C:\DXSDK
-    echo     - Open VEX.sln in Visual Studio for detailed errors
+    echo     - Open Sky.sln in Visual Studio for detailed errors
 )
 
 echo.

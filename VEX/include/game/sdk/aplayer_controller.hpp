@@ -4,7 +4,7 @@
 #include "aactor.hpp"
 #include "aplayer_camera_manager.hpp"
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     class APlayerController : public UObject {
     public:
@@ -32,6 +32,6 @@ namespace vex::game::sdk {
 		}
     };
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk
 
 

@@ -2,7 +2,7 @@
 
 #include "ue_object.hpp"
 
-namespace vex::game::sdk {
+namespace sky::game::sdk {
 
     /**
      * @brief Class ULevel - Represents a level/map in UE5
@@ -21,5 +21,5 @@ namespace vex::game::sdk {
         }
     };
 
-} // namespace vex::game::sdk
+} // namespace sky::game::sdk
 
