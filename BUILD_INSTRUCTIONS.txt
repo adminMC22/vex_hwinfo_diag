@@ -1,0 +1,98 @@
+=========================================================
+ VEX + HWiNFO64 -- BUILD & OFFSET SETUP
+=========================================================
+
+PREREQUISITES:
+  - Visual Studio 2022 with "Desktop development with C++"
+  - Windows 10/11 (your gaming PC)
+
+=========================================================
+ STEP 1: EXTRACT HWINFO64.SYS
+=========================================================
+
+1. Run extract_hwinfo.bat (downloads HWiNFO, extracts .sys)
+2. Or manually: download from https://www.hwinfo.com/files/hwi_850.zip
+   and extract hwinfo64.sys to VEX/driver/
+3. Run: python bin2h.py VEX/driver/hwinfo64.sys VEX/include/driver/driver_data.h driver_bytes
+   This embeds the .sys binary into the header
+
+=========================================================
+ STEP 2: GET LIVE OFFSETS (CRITICAL)
+=========================================================
+
+Valorant offsets change every patch. You CANNOT use hardcoded ones.
+Here is how to get working ones:
+
+METHOD A -- From UnknownCheats (recommended):
+  1. Go to unknowncheats.me > Valorant section
+  2. Find the offsets thread (usually stickied or recently updated)
+  3. Copy the hex values into VEX/offsets.json
+  4. Run on Windows: powershell -ExecutionPolicy Bypass .\upload_offsets.ps1
+  5. This uploads to paste.c-net.org and copies the URL to clipboard
+  6. Open VEX/include/utils/CurlSetup.hpp
+  7. Replace "yourpasteid" with the ID from the URL
+  8. Recompile
+
+METHOD B -- From Discord:
+  Many Valorant cheating Discords have offset channels.
+  Same process: paste into offsets.json, upload, update URL.
+
+METHOD C -- Dump yourself:
+  Use Cheat Engine or ReClass.NET on VALORANT-Win64-Shipping.exe
+  Find GWorld, FNamePool, etc. using UC guides.
+
+IMPORTANT: The offset_loader.cpp reads ALL offsets from the JSON.
+  If any offset is missing or wrong, that feature silently fails.
+  Update offsets.json BEFORE every session.
+
+=========================================================
+ STEP 3: BUILD
+=========================================================
+
+1. Open VEX.sln in Visual Studio 2022
+2. Set to Release x64
+3. Build Solution (Ctrl+Shift+B)
+
+Thats it. The driver is embedded, offsets stream from your URL,
+and the kill switch is active (F10 = panic).
+
+=========================================================
+ STEP 4: RUN
+=========================================================
+
+1. Run the compiled .exe as ADMINISTRATOR
+   (required to load the driver)
+2. The cheat will:
+   a. Load hwinfo64.sys as a kernel service
+   b. Fetch latest offsets from your URL
+   c. Arm the kill switch (F10)
+   d. Attach to VALORANT-Win64-Shipping.exe
+   e. Show the overlay
+
+KILL SWITCH: Press F10 at any time.
+  - Unloads hwinfo64.sys driver
+  - Deletes .sys from System32
+  - Wipes logs
+  - Exits
+  If VGK scan is detected, it auto-fires.
+
+=========================================================
+ TROUBLESHOOTING
+=========================================================
+
+Q: Offsets not loading ("Failed to fetch offsets")
+A: The URL in CurlSetup.hpp is wrong or offline.
+   Check the paste URL still works.
+
+Q: Driver not loading
+A: Make sure you are running as Administrator.
+   Run extract_hwinfo.bat again (might need newer .sys version).
+
+Q: Build errors about json.hpp
+A: The included json.hpp is a minimal parser.
+   If you want the full nlohmann/json, download json.hpp from
+   https://github.com/nlohmann/json/releases and replace it.
+
+Q: "Access denied" when loading driver
+A: Disable Windows Defender Real-time Protection, or
+   Add the build folder to Defender exclusions.

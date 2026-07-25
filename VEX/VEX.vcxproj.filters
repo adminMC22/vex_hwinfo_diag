@@ -1,0 +1,219 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Core">
+      <UniqueIdentifier>{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Driver">
+      <UniqueIdentifier>{E12C6187-8B4A-11D0-8D11-00A0C91BC943}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game">
+      <UniqueIdentifier>{F12C6187-8B4A-11D0-8D11-00A0C91BC944}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\SDK">
+      <UniqueIdentifier>{F12C6187-8B4A-11D0-8D11-00A0C91BC945}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\Engine">
+      <UniqueIdentifier>{F12C6187-8B4A-11D0-8D11-00A0C91BC946}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utils">
+      <UniqueIdentifier>{F12C6187-8B4A-11D0-8D11-00A0C91BC947}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="render">
+      <UniqueIdentifier>{A2D8C2E1-0C7E-4A9F-ABBE-8C1D5A1D9C10}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="render\elements">
+      <UniqueIdentifier>{36af109f-d65f-4196-87ed-6e936b9e6c40}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\utils\console_logger.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\utils\memory_config.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\driver\driver_impl.cpp">
+      <Filter>Driver</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\vgk_system.cpp">
+      <Filter>Game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\core\application.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\sdk\uworld.cpp">
+      <Filter>Game\SDK</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\sdk\ulevel.cpp">
+      <Filter>Game\SDK</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\sdk\ugame_instance.cpp">
+      <Filter>Game\SDK</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\engine\game_engine.cpp">
+      <Filter>Game\Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\render.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+    <ClCompile Include="..\3rd\imgui\imgui.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+    <ClCompile Include="..\3rd\imgui\imgui_draw.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+    <ClCompile Include="..\3rd\imgui\imgui_tables.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+    <ClCompile Include="..\3rd\imgui\imgui_widgets.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+    <ClCompile Include="..\3rd\imgui\backends\imgui_impl_dx11.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+    <ClCompile Include="..\3rd\imgui\backends\imgui_impl_win32.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\button.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\checkbox.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\child.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\colorpicker.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\draw.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\dropdown.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\helpers.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\keybind.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\notify.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\section.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\slider.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\textfield.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\elements\window.cpp">
+      <Filter>render\elements</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render\gui.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+    <ClCompile Include="..\3rd\imgui\imgui_freetype.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\common.hpp" />
+    <ClInclude Include="include\vex.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\core\iapplication.hpp">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="include\driver\idriver.hpp">
+      <Filter>Driver</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\vgk_system.hpp">
+      <Filter>Game</Filter>
+    </ClInclude>
+    <ClInclude Include="include\utils\logger.hpp">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="include\utils\config.hpp">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\sdk.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\ue_object.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\ulevel.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\ugame_instance.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\uworld.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\aactor.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\aplayer_controller.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\aplayer_camera_manager.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\fname_cache.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\fname_cache_context.hpp">
+      <Filter>Game\SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\engine\game_engine.hpp">
+      <Filter>Game\Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="include\driver\driver_context.hpp">
+      <Filter>Driver</Filter>
+    </ClInclude>
+    <ClInclude Include="driver\driver_data.h">
+      <Filter>Driver</Filter>
+    </ClInclude>
+    <ClInclude Include="include\render\render.hpp">
+      <Filter>render</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\aplayer_state.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\ulocalplayer.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\sdk\adamage_handler.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\game\aimbot.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="include\driver\io.asm">
+      <Filter>Driver</Filter>
+    </MASM>
+  </ItemGroup>
+</Project>

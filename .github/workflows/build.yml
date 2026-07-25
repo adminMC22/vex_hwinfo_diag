@@ -1,0 +1,47 @@
+name: Build VEX.exe
+
+on:
+  push:
+    branches: [ main, master, build ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install DirectX SDK (June 2010)
+      shell: pwsh
+      run: |
+        $url = "https://download.microsoft.com/download/A/E/7/AE743F1F-632B-4809-87A9-AA1BB3458E31/DXSDK_Jun10.exe"
+        $out = "$env:TEMP\DXSDK_Jun10.exe"
+        Write-Host "Downloading DirectX SDK (this is ~500MB, cached by GitHub)..."
+        Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+        Write-Host "Extracting DXSDK to C:\DXSDK..."
+        Start-Process -FilePath $out -ArgumentList "/U","/F:C:\DXSDK" -Wait -NoNewWindow
+        Write-Host "DXSDK ready at C:\DXSDK"
+        Get-ChildItem C:\DXSDK\Include\d3dx11*.h
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+      with:
+        msbuild-architecture: x64
+
+    - name: Build
+      working-directory: ${{ github.workspace }}
+      run: |
+        MSBuild.exe VEX.sln /p:Configuration=Release /p:Platform=x64 /nologo /v:q
+      env:
+        # Force 64-bit toolchain
+        PreferredToolArchitecture: x64
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: VEX.exe
+        path: VEX/bin/Release/x64/VEX.exe
+        compression-level: 0
+        if-no-files-found: error

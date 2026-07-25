@@ -1,0 +1,1 @@
+Place hwinfo64.sys here after running extract_hwinfo.bat
