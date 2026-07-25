@@ -192,106 +192,38 @@
     <ClInclude Include="include\game\engine\game_engine.hpp" />
   </ItemGroup>
   <ItemGroup>
-    <!-- Arquivos originais mantidos para compatibilidade -->
-    <!-- Novos arquivos modulares -->
-    <ClCompile Include="..\3rd\imgui\imgui_freetype.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
+    <!-- Unity build: main.cpp includes all .cpp files below -->
+    <ClCompile Include="..\3rd\imgui\imgui.cpp" />
+    <ClCompile Include="..\3rd\imgui\imgui_draw.cpp" />
+    <ClCompile Include="..\3rd\imgui\imgui_tables.cpp" />
+    <ClCompile Include="..\3rd\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="..\3rd\imgui\imgui_freetype.cpp" />
+    <ClCompile Include="..\3rd\imgui\backends\imgui_impl_dx11.cpp" />
+    <ClCompile Include="..\3rd\imgui\backends\imgui_impl_win32.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="src\render\elements\button.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\checkbox.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\child.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\colorpicker.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\draw.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\dropdown.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\helpers.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\keybind.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\notify.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\section.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\slider.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\textfield.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\elements\window.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\render\gui.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <!-- UI / ImGui -->
+    <ClCompile Include="src\render\elements\button.cpp" />
+    <ClCompile Include="src\render\elements\checkbox.cpp" />
+    <ClCompile Include="src\render\elements\child.cpp" />
+    <ClCompile Include="src\render\elements\colorpicker.cpp" />
+    <ClCompile Include="src\render\elements\draw.cpp" />
+    <ClCompile Include="src\render\elements\dropdown.cpp" />
+    <ClCompile Include="src\render\elements\helpers.cpp" />
+    <ClCompile Include="src\render\elements\keybind.cpp" />
+    <ClCompile Include="src\render\elements\notify.cpp" />
+    <ClCompile Include="src\render\elements\section.cpp" />
+    <ClCompile Include="src\render\elements\slider.cpp" />
+    <ClCompile Include="src\render\elements\textfield.cpp" />
+    <ClCompile Include="src\render\elements\window.cpp" />
+    <ClCompile Include="src\render\gui.cpp" />
     <ClCompile Include="src\render\render.cpp" />
-    <ClCompile Include="..\3rd\imgui\imgui.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="..\3rd\imgui\imgui_draw.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="..\3rd\imgui\imgui_tables.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="..\3rd\imgui\imgui_widgets.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="..\3rd\imgui\backends\imgui_impl_dx11.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="..\3rd\imgui\backends\imgui_impl_win32.cpp">
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\utils\console_logger.cpp" />
-    <ClCompile Include="src\utils\memory_config.cpp" />
+    <!-- OUTSIDE unity build (compiled separately) -->
     <ClCompile Include="src\driver\driver_impl.cpp" />
     <ClCompile Include="src\game\vgk_system.cpp" />
-    <ClCompile Include="src\core\application.cpp" />
+    <ClCompile Include="src\game\engine\game_engine.cpp" />
     <!-- SDK UE5 -->
     <ClCompile Include="src\game\sdk\ulevel.cpp" />
     <ClCompile Include="src\game\sdk\ugame_instance.cpp" />
     <ClCompile Include="src\game\sdk\uworld.cpp" />
-    <!-- Game Engine -->
-    <ClCompile Include="src\game\engine\game_engine.cpp" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="include\driver\io.asm" />
