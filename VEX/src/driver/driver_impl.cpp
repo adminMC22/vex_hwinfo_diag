@@ -157,6 +157,8 @@ namespace sky::driver {
         }
 
         // Create the driver service
+        // ImagePath must use NT path format (\??\C:\...) for kernel drivers
+        std::string nt_path = "\\??\\" + driver_file;
         SC_HANDLE svc = CreateServiceA(scm,
             "SkyHwiNFO",
             "Sky HWiNFO Driver",
@@ -164,7 +166,7 @@ namespace sky::driver {
             SERVICE_KERNEL_DRIVER,
             SERVICE_DEMAND_START,
             SERVICE_ERROR_NORMAL,
-            driver_file.c_str(),  // ImagePath - uses DOS path format
+            nt_path.c_str(),  // NT path format: \??\C:\path\to\driver.sys
             nullptr, nullptr, nullptr, nullptr, nullptr);
         if (!svc) {
             DWORD err = GetLastError();
