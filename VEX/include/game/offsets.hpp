@@ -163,6 +163,7 @@ namespace offsets {
     inline uintptr_t& enemy_outline       = EnemyOutline;
     inline uintptr_t& bone_array_cache    = BoneArrayCache;
     inline uintptr_t& current_defuse_section = CurrentDefuseSection;
+    inline uintptr_t& DefuseSection = CurrentDefuseSection;
     inline uintptr_t& magazine_ammo       = MagazineAmmo;
     inline uintptr_t& auth_resource_amount = AuthResourceAmount;
     inline uintptr_t& max_ammo            = MaxAmmo;

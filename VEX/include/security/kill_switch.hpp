@@ -35,6 +35,7 @@ namespace vex::security {
         bool auto_wipe_logs = true;       // Clear cheat logs
         int heartbeat_ms = 500;           // Check interval
         bool enable_vgk_monitor = true;   // Monitor for VGK scanning
+        bool auto_clean_driver = true;    // Close handle on panic
     };
 
     class KillSwitch {
