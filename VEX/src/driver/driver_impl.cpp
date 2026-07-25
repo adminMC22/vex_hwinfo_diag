@@ -15,24 +15,17 @@
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "advapi32.lib")
 
-// Native NT APIs for direct driver loading
 extern "C" NTSTATUS NTAPI NtLoadDriver(PUNICODE_STRING DriverServiceName);
 extern "C" NTSTATUS NTAPI NtUnloadDriver(PUNICODE_STRING DriverServiceName);
 extern "C" NTSTATUS NTAPI RtlAdjustPrivilege(ULONG Privilege, BOOLEAN Enable, BOOLEAN CurrentThread, PBOOLEAN Enabled);
-extern "C" NTSTATUS NTAPI RtlFormatCurrentUserKeyPath(PUNICODE_STRING Path);
 
 #define SE_LOAD_DRIVER_PRIVILEGE 10L
 
 namespace sky::driver {
 
-    // Sky loads the HWiNFO driver itself using NtLoadDriver.
-    // The driver file is found on disk and loaded into the kernel.
-    // No need for HWiNFO64.exe to be running.
-    //
     // IOCTL codes for physical memory access (hwinfo64.sys):
     //   Read:  0x9C40259C  (CTL_CODE(0x22, 0x118, 0, 0))
     //   Write: 0x9C4025A0  (CTL_CODE(0x22, 0x119, 0, 0))
-
     #define CTLCODE_READ  0x9C40259C
     #define CTLCODE_WRITE 0x9C4025A0
 
@@ -40,23 +33,58 @@ namespace sky::driver {
     #define PAGE_MASK_2MB  0xFFFFFFFFFFE00000ULL
     #define PAGE_MASK_1GB  0xFFFFFC0000000000ULL
 
-    static const char* DEVICE_PATHS[] = {
-        "\\\\.\\HWiNFO",
-        "\\\\.\\HWiNFO32",
-        "\\\\.\\HWiNFO64",
-        "\\\\.\\HWiNFO_0",
-        nullptr
-    };
-
-    static const char* SKY_SERVICE_NAME = "SkyHwiNFO";
-
     HANDLE g_hwinfo_device = INVALID_HANDLE_VALUE;
 
-    // ---- Find ALL HWiNFO*.sys files on the system ----
-    static std::vector<std::string> find_all_driver_files() {
-        std::vector<std::string> results;
+    // ---- Find the HWiNFO device by enumerating DOS device names ----
+    // HWiNFO64 creates a device name like "HWiNFO", "HWiNFO32", etc.
+    // in the DOS devices namespace. We enumerate all and find any with "HWiNFO".
+    static bool find_and_open_hwinfo_device() {
+        // QueryDosDevice(NULL) returns all DOS device names separated by \0,
+        // with double \0 at the end. Each name can be used as \\.\<name>.
+        char buf[65536] = { 0 };
+        DWORD ret = QueryDosDeviceA(nullptr, buf, sizeof(buf));
+        if (ret == 0) {
+            LOG_ERROR("QueryDosDevice failed: " + std::to_string(GetLastError()));
+            return false;
+        }
 
-        // 1) %TEMP% (modern HWiNFO extracts driver here)
+        // Parse the multi-string
+        std::vector<std::string> hwinfo_names;
+        for (char* p = buf; *p; p += strlen(p) + 1) {
+            std::string name(p);
+            // Look for any name containing "HWiNFO" (case-insensitive comparison)
+            std::string upper;
+            for (char c : name) upper += (char)toupper((unsigned char)c);
+            if (upper.find("HWINFO") != std::string::npos) {
+                hwinfo_names.push_back(name);
+            }
+        }
+
+        // Try each found name as \\.\<name>
+        for (const auto& nm : hwinfo_names) {
+            std::string path = "\\\\.\\" + nm;
+            LOG_INFO("Trying device: " + path);
+            g_hwinfo_device = CreateFileA(path.c_str(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                nullptr, OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
+                LOG_INFO("Opened device: " + path);
+                return true;
+            }
+            LOG_ERROR("  Failed: " + path + " (err=" + std::to_string(GetLastError()) + ")");
+        }
+
+        return false;
+    }
+
+    // ---- Fallback: try loading the HWiNFO driver via SCM ----
+    static bool load_hwinfo_driver_via_scm() {
+        // Find the driver .sys file on disk
+        std::string driver_file;
+
+        // 1) %TEMP%
         char temp_path[MAX_PATH + 1] = { 0 };
         if (GetTempPathA(MAX_PATH, temp_path) > 0) {
             std::string search = std::string(temp_path) + "HWiNFO*.sys";
@@ -64,63 +92,45 @@ namespace sky::driver {
             HANDLE h = FindFirstFileA(search.c_str(), &fd);
             if (h != INVALID_HANDLE_VALUE) {
                 do {
-                    results.push_back(std::string(temp_path) + fd.cFileName);
+                    driver_file = std::string(temp_path) + fd.cFileName;
+                    LOG_INFO(std::string("Found driver in TEMP: ") + driver_file);
+                    break; // take first match
                 } while (FindNextFileA(h, &fd));
                 FindClose(h);
             }
         }
 
-        // 2) Program Files trees (walked recursively up to 2 levels)
-        const char* dirs[] = {
-            "C:\\Program Files\\HWiNFO64\\",
-            "C:\\Program Files (x86)\\HWiNFO\\",
-            "C:\\Program Files\\HWiNFO\\",
-            "C:\\HWiNFO64\\",
-            nullptr
-        };
-        for (int i = 0; dirs[i]; i++) {
-            std::string search = std::string(dirs[i]) + "HWiNFO*.sys";
-            WIN32_FIND_DATAA fd;
-            HANDLE h = FindFirstFileA(search.c_str(), &fd);
-            if (h != INVALID_HANDLE_VALUE) {
-                do {
-                    results.push_back(std::string(dirs[i]) + fd.cFileName);
-                } while (FindNextFileA(h, &fd));
-                FindClose(h);
+        // 2) Program Files
+        if (driver_file.empty()) {
+            const char* dirs[] = {
+                "C:\\Program Files\\HWiNFO64\\",
+                "C:\\Program Files (x86)\\HWiNFO\\",
+                "C:\\Program Files\\HWiNFO\\",
+                "C:\\HWiNFO64\\",
+                nullptr
+            };
+            for (int i = 0; dirs[i] && driver_file.empty(); i++) {
+                std::string search = std::string(dirs[i]) + "HWiNFO*.sys";
+                WIN32_FIND_DATAA fd;
+                HANDLE h = FindFirstFileA(search.c_str(), &fd);
+                if (h != INVALID_HANDLE_VALUE) {
+                    do {
+                        driver_file = std::string(dirs[i]) + fd.cFileName;
+                        LOG_INFO(std::string("Found driver: ") + driver_file);
+                        break;
+                    } while (FindNextFileA(h, &fd));
+                    FindClose(h);
+                }
             }
         }
 
-        // 3) SystemRoot\\System32\\drivers (some installs put it here)
-        char sys_dir[MAX_PATH + 1] = { 0 };
-        if (GetSystemDirectoryA(sys_dir, MAX_PATH) > 0) {
-            std::string search = std::string(sys_dir) + "\\HWiNFO*.sys";
-            WIN32_FIND_DATAA fd;
-            HANDLE h = FindFirstFileA(search.c_str(), &fd);
-            if (h != INVALID_HANDLE_VALUE) {
-                do {
-                    results.push_back(std::string(sys_dir) + "\\" + fd.cFileName);
-                } while (FindNextFileA(h, &fd));
-                FindClose(h);
-            }
-        }
-
-        return results;
-    }
-
-    // ---- Load driver ourselves using NtLoadDriver ----
-    // Tries every driver file found, one by one.
-    static bool load_driver_ourselves() {
-        std::vector<std::string> drivers = find_all_driver_files();
-
-        if (drivers.empty()) {
+        if (driver_file.empty()) {
             MessageBoxA(0,
-                "No HWiNFO*.sys driver file found anywhere.\n\n"
+                "HWiNFO driver .sys file not found.\n\n"
                 "Searched:\n"
                 "  %TEMP%\\HWiNFO*.sys\n"
-                "  C:\\Program Files\\HWiNFO64\\\n"
-                "  C:\\Program Files (x86)\\HWiNFO\\\n"
-                "  C:\\Windows\\System32\\drivers\\\n\n"
-                "Run HWiNFO64 at least once so it extracts the driver.",
+                "  C:\\Program Files\\HWiNFO*\\\n\n"
+                "Run HWiNFO64 at least once to extract the driver.",
                 "Sky Driver", MB_OK | MB_ICONERROR);
             return false;
         }
@@ -129,216 +139,121 @@ namespace sky::driver {
         BOOLEAN old = FALSE;
         RtlAdjustPrivilege(SE_LOAD_DRIVER_PRIVILEGE, TRUE, FALSE, &old);
 
-        std::string reg_path = "SYSTEM\\CurrentControlSet\\Services\\";
-        reg_path += SKY_SERVICE_NAME;
-
-        // Try each driver file until one works
-        for (const auto& driver_file : drivers) {
-            LOG_INFO(std::string("Trying driver: ") + driver_file);
-
-            // Verify file exists and is readable
-            DWORD attr = GetFileAttributesA(driver_file.c_str());
-            if (attr == INVALID_FILE_ATTRIBUTES) {
-                LOG_ERROR("  File not accessible, skipping");
-                continue;
-            }
-
-            // Create registry service entry
-            HKEY hKey;
-            LONG rc = RegCreateKeyExA(HKEY_LOCAL_MACHINE, reg_path.c_str(), 0, nullptr,
-                0, KEY_ALL_ACCESS, nullptr, &hKey, nullptr);
-            if (rc != ERROR_SUCCESS) {
-                std::string emsg = "RegCreateKeyEx failed: " + std::to_string(rc) + "\n";
-                emsg += "Path: HKLM\\" + reg_path + "\n";
-                emsg += "Make sure Sky.exe is Run as Administrator.";
-                MessageBoxA(0, emsg.c_str(), "Sky Registry Error",
-                    MB_OK | MB_ICONERROR);
-                LOG_ERROR("  Failed to create registry key");
-                continue;
-            }
-
-            // Set ImagePath as NT-style path: \??\C:\path\to\driver.sys
-            // Must use REG_SZ (not REG_EXPAND_SZ) because \??\ is NT path, not DOS
-            std::string img_path = "\\??\\" + driver_file;
-            LONG si = RegSetValueExA(hKey, "ImagePath", 0, REG_SZ,
-                (const BYTE*)img_path.c_str(),
-                (DWORD)(img_path.length() + 1));
-            DWORD type = 1;  // SERVICE_KERNEL_DRIVER
-            RegSetValueExA(hKey, "Type", 0, REG_DWORD,
-                (const BYTE*)&type, sizeof(type));
-            DWORD start = 3;  // SERVICE_DEMAND_START
-            RegSetValueExA(hKey, "Start", 0, REG_DWORD,
-                (const BYTE*)&start, sizeof(start));
-            DWORD err_ctrl = 0;
-            RegSetValueExA(hKey, "ErrorControl", 0, REG_DWORD,
-                (const BYTE*)&err_ctrl, sizeof(err_ctrl));
-            RegCloseKey(hKey);
-
-            // Verify registry write by reading it back
-            HKEY vKey;
-            if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, reg_path.c_str(), 0, KEY_READ, &vKey) == ERROR_SUCCESS) {
-                char read_path[512] = { 0 };
-                DWORD read_len = sizeof(read_path);
-                DWORD read_type = 0;
-                if (RegQueryValueExA(vKey, "ImagePath", nullptr, &read_type,
-                    (LPBYTE)read_path, &read_len) == ERROR_SUCCESS) {
-                    LOG_INFO(std::string("Verified ImagePath: ") + read_path);
-                } else {
-                    LOG_ERROR("ImagePath not readable after write!");
-                }
-                RegCloseKey(vKey);
-            }
-
-            // Build the full registry path NtLoadDriver wants
-            std::wstring wsvc = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\";
-            // Append ASCII service name as wide string (proper conversion)
-            for (size_t i = 0; SKY_SERVICE_NAME[i]; i++) {
-                wsvc += (wchar_t)SKY_SERVICE_NAME[i];
-            }
-
-            UNICODE_STRING u;
-            u.Buffer = (PWSTR)wsvc.c_str();
-            u.Length = (USHORT)(wsvc.length() * sizeof(wchar_t));
-            u.MaximumLength = u.Length + sizeof(wchar_t);
-
-            NTSTATUS st = NtLoadDriver(&u);
-
-            // STATUS_IMAGE_ALREADY_LOADED = 0xC000010E (driver already in memory)
-            // That's actually fine - means it loaded previously
-            if (NT_SUCCESS(st) || st == (NTSTATUS)0xC000010E) {
-                Sleep(1000);
-                LOG_INFO("  Driver loaded OK");
-                return true;
-            }
-
-            // Failed - show diagnostic with exact paths
-            std::stringstream ss;
-            ss << std::hex << (unsigned long)st;
-            std::string msg = "NtLoadDriver failed: 0x" + ss.str() + "\n\n";
-            msg += "Driver file:\n  " + driver_file + "\n\n";
-            msg += "ImagePath (registry):\n  " + img_path + "\n\n";
-            msg += "Service path (NT):\n  ";
-            // Convert wsvc to string for display
-            std::string svc_str(wsvc.begin(), wsvc.end());
-            msg += svc_str + "\n\n";
-            msg += "Reg key:\n  HKLM\\" + reg_path + "\n\n";
-            if (st == (NTSTATUS)0xC0000034) {
-                msg += "STATUS_OBJECT_NAME_NOT_FOUND\n";
-                msg += "Registry key or ImagePath not found.\n";
-                msg += "Check the ImagePath value above.";
-            } else if (st == (NTSTATUS)0xC000026C) {
-                msg += "STATUS_DRIVER_FAILED_TO_LOAD\n";
-                msg += "Driver signature/security issue.";
-            } else if (st == (NTSTATUS)0xC000010E) {
-                msg += "STATUS_DRIVER_BLOCKED\n";
-                msg += "Vanguard or HVCI blocking this driver.";
-            } else if (st == (NTSTATUS)0xC0000022) {
-                msg += "STATUS_ACCESS_DENIED\n";
-                msg += "Not running as Administrator.";
-            }
-            MessageBoxA(0, msg.c_str(), "Sky Driver Diagnostic",
-                MB_OK | MB_ICONERROR);
-            LOG_ERROR("  NtLoadDriver failed: 0x" + ss.str());
-
-            // Clean up registry for next attempt
-            RegDeleteKeyA(HKEY_LOCAL_MACHINE, reg_path.c_str());
-
-            // Continue to next driver file
-        }
-
-        // All attempts failed - build detailed error message
-        std::string msg = "NtLoadDriver failed for all driver files found.\n\n";
-        msg += "Files tried:\n";
-        for (const auto& f : drivers) {
-            msg += "  ";
-            msg += f;
-            msg += "\n";
-        }
-        msg += "\nLast error: 0x";
-        std::stringstream ss;
-        ss << std::hex << 0xC0000034;
-        msg += ss.str();
-        msg += "\n\nTroubleshooting:\n";
-        msg += "- Make sure Sky.exe is Run as Administrator\n";
-        msg += "- Check if Vanguard is blocking driver loading\n";
-        msg += "- Try running HWiNFO64 as Admin first to test the driver\n";
-        MessageBoxA(0, msg.c_str(), "Sky Driver Load Failed",
-            MB_OK | MB_ICONERROR);
-        return false;
-    }
-
-    // ---- Unload driver we loaded ----
-    static void unload_driver_ourselves() {
-        std::wstring wsvc = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\";
-        for (size_t i = 0; SKY_SERVICE_NAME[i]; i++) {
-            wsvc += (wchar_t)SKY_SERVICE_NAME[i];
-        }
-        UNICODE_STRING u;
-        u.Buffer = (PWSTR)wsvc.c_str();
-        u.Length = (USHORT)(wsvc.length() * sizeof(wchar_t));
-        u.MaximumLength = u.Length + sizeof(wchar_t);
-
-        NtUnloadDriver(&u);
-        RegDeleteKeyA(HKEY_LOCAL_MACHINE,
-            ("SYSTEM\\CurrentControlSet\\Services\\" + std::string(SKY_SERVICE_NAME)).c_str());
-    }
-
-    // ---- Open device: try live, else load driver ourselves ----
-    static bool open_hwinfo_device() {
-        // Try opening the device. If HWiNFO64 is already running,
-        // the device might already exist (created by HWiNFO itself).
-        DWORD last_err = 0;
-        for (int i = 0; DEVICE_PATHS[i]; i++) {
-            g_hwinfo_device = CreateFileA(DEVICE_PATHS[i],
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                nullptr, OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
-                LOG_INFO(std::string("Opened device (live): ") + DEVICE_PATHS[i]);
-                return true;
-            }
-            last_err = GetLastError();
-        }
-
-        // Device not found - load the driver ourselves
-        LOG_INFO("Device not found, loading HWiNFO driver ourselves...");
-        if (!load_driver_ourselves()) {
+        // Use SCM to load the driver
+        SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
+        if (!scm) {
+            DWORD err = GetLastError();
+            std::string msg = "OpenSCManager failed: " + std::to_string(err) + "\n";
+            if (err == ERROR_ACCESS_DENIED) msg += "Not running as Administrator?";
+            MessageBoxA(0, msg.c_str(), "Sky Driver", MB_OK | MB_ICONERROR);
             return false;
         }
 
-        // Retry opening device now that driver is loaded
-        for (int i = 0; DEVICE_PATHS[i]; i++) {
-            g_hwinfo_device = CreateFileA(DEVICE_PATHS[i],
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                nullptr, OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
-                LOG_INFO(std::string("Opened device (after NtLoadDriver): ") + DEVICE_PATHS[i]);
-                return true;
+        // Delete any previous SkyHwiNFO service
+        SC_HANDLE old_svc = OpenServiceA(scm, "SkyHwiNFO", DELETE);
+        if (old_svc) {
+            DeleteService(old_svc);
+            CloseServiceHandle(old_svc);
+        }
+
+        // Create the driver service
+        SC_HANDLE svc = CreateServiceA(scm,
+            "SkyHwiNFO",
+            "Sky HWiNFO Driver",
+            SERVICE_ALL_ACCESS,
+            SERVICE_KERNEL_DRIVER,
+            SERVICE_DEMAND_START,
+            SERVICE_ERROR_NORMAL,
+            driver_file.c_str(),  // ImagePath - uses DOS path format
+            nullptr, nullptr, nullptr, nullptr, nullptr);
+        if (!svc) {
+            DWORD err = GetLastError();
+            if (err == ERROR_SERVICE_EXISTS) {
+                svc = OpenServiceA(scm, "SkyHwiNFO", SERVICE_ALL_ACCESS);
+            }
+        }
+        if (!svc) {
+            std::string msg = "CreateService failed: " + std::to_string(GetLastError());
+            MessageBoxA(0, msg.c_str(), "Sky Driver", MB_OK | MB_ICONERROR);
+            CloseServiceHandle(scm);
+            return false;
+        }
+
+        // Start the driver
+        if (!StartServiceA(svc, 0, nullptr)) {
+            DWORD err = GetLastError();
+            if (err != ERROR_SERVICE_ALREADY_RUNNING) {
+                std::string msg = "StartService failed: " + std::to_string(err) + "\n\n";
+                if (err == ERROR_FILE_NOT_FOUND) msg += "Driver file not found.";
+                else if (err == ERROR_PATH_NOT_FOUND) msg += "Driver path invalid.";
+                else if (err == ERROR_BAD_DRIVER) msg += "Driver is corrupted or invalid.";
+                else if (err == ERROR_DRIVER_BLOCKED) msg += "Driver blocked by security policy.";
+                MessageBoxA(0, msg.c_str(), "Sky Driver", MB_OK | MB_ICONERROR);
+                CloseServiceHandle(svc);
+                CloseServiceHandle(scm);
+                return false;
             }
         }
 
-        // Driver loaded successfully but device still not accessible.
-        // This usually means the driver creates a different device name
-        // than the ones we tried.
-        std::string err = "Driver loaded but device not accessible.\n";
-        err += "Last CreateFile error: " + std::to_string(GetLastError()) + "\n\n";
-        err += "Device names tried:\n";
-        for (int i = 0; DEVICE_PATHS[i]; i++) {
-            err += "  ";
-            err += DEVICE_PATHS[i];
-            err += "\n";
+        CloseServiceHandle(svc);
+        CloseServiceHandle(scm);
+        Sleep(1500);  // Wait for driver device to be created
+        LOG_INFO("Driver loaded via SCM");
+        return true;
+    }
+
+    static void unload_driver() {
+        if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
+            CloseHandle(g_hwinfo_device);
+            g_hwinfo_device = INVALID_HANDLE_VALUE;
         }
-        err += "\nNeed to reverse engineer HWiNFO_x64_215.sys\n";
-        err += "to find the real device name.";
-        MessageBoxA(0, err.c_str(), "Sky Driver", MB_OK | MB_ICONERROR);
-        unload_driver_ourselves();
+
+        // Unload via SCM
+        SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
+        if (scm) {
+            SC_HANDLE svc = OpenServiceA(scm, "SkyHwiNFO", SERVICE_STOP | DELETE);
+            if (svc) {
+                SERVICE_STATUS ss;
+                ControlService(svc, SERVICE_CONTROL_STOP, &ss);
+                DeleteService(svc);
+                CloseServiceHandle(svc);
+            }
+            CloseServiceHandle(scm);
+        }
+    }
+
+    // ---- Open device: try existing, then load driver ourselves ----
+    static bool open_hwinfo_device() {
+        // Step 1: Try to find and open HWiNFO device (if already running)
+        if (find_and_open_hwinfo_device()) {
+            return true;
+        }
+
+        // Step 2: Not found — load driver via SCM and try again
+        LOG_INFO("Device not found, loading HWiNFO driver...");
+        if (!load_hwinfo_driver_via_scm()) {
+            return false;
+        }
+
+        // Step 3: Retry opening the device
+        if (find_and_open_hwinfo_device()) {
+            return true;
+        }
+
+        // Step 4: Still can't open — diagnostic
+        std::string msg = "Driver loaded but device not accessible.\n\n";
+        msg += "QueryDosDevice returned no HWiNFO entries.\n";
+        msg += "Possible reasons:\n";
+        msg += "- Driver has a non-standard device name\n";
+        msg += "- Vanguard blocked device creation\n";
+        msg += "- Driver failed to initialize\n\n";
+        msg += "Try running HWiNFO64 first, then Sky.exe.";
+        MessageBoxA(0, msg.c_str(), "Sky Driver", MB_OK | MB_ICONERROR);
+        unload_driver();
         return false;
     }
 
-    // ---- Physical memory read via HWiNFO IOCTL ----
+    // ---- Physical memory read/write via HWiNFO IOCTL ----
 
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
@@ -455,10 +370,8 @@ namespace sky::driver {
             , m_dtb(0)
             , m_dirbase_set(false) {}
 
-        // ---- Setup / management ----
-
         bool setup() override {
-            LOG_INFO("Connecting to HWiNFO64 device...");
+            LOG_INFO("Connecting to HWiNFO device...");
 
             if (!open_hwinfo_device()) {
                 LOG_ERROR("Could not open HWiNFO device.");
@@ -466,16 +379,12 @@ namespace sky::driver {
             }
 
             m_initialized = true;
-            LOG_INFO("HWiNFO64 connection established");
+            LOG_INFO("HWiNFO connection established");
             return true;
         }
 
         void unload() override {
-            if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
-                CloseHandle(g_hwinfo_device);
-                g_hwinfo_device = INVALID_HANDLE_VALUE;
-            }
-            unload_driver_ourselves();
+            unload_driver();
             m_initialized = false;
             LOG_INFO("HWiNFO device closed and driver unloaded");
         }
@@ -484,10 +393,8 @@ namespace sky::driver {
             return m_initialized && g_hwinfo_device != INVALID_HANDLE_VALUE;
         }
 
-        // ---- Process management ----
-
         bool attach_process(const std::wstring& process_name) override {
-            LOG_INFO("attach_process called (stub): "
+            LOG_INFO("attach_process (stub): "
                 + std::string(process_name.begin(), process_name.end()));
             return true;
         }
@@ -506,8 +413,6 @@ namespace sky::driver {
             (void)x; (void)y; (void)button_flags;
             return false;
         }
-
-        // ---- Memory operations ----
 
         bool read_memory(uintptr_t address, void* buffer, size_t size) override {
             if (!m_initialized || !buffer || size == 0) return false;
@@ -536,8 +441,6 @@ namespace sky::driver {
             (void)hwnd; (void)flag;
             return false;
         }
-
-        // ---- System info ----
 
         uintptr_t get_kernel_base(const std::string& module_name) override {
             (void)module_name;

@@ -46,12 +46,8 @@ namespace sky::core {
 
                 if (!sky::driver::g_driver->setup()) {
                     LOG_WARNING("Failed to setup driver");
-                    MessageBoxA(0, xorstr_("Failed to connect to HWiNFO driver.\n\n"
-                        "The popup before this showed the specific error.\n\n"
-                        "Most common:\n"
-                        "1. Run HWiNFO64 as Admin at least once first\n"
-                        "2. Sky.exe must run as Admin\n"
-                        "3. Vanguard blocks the driver from loading"), xorstr_("Driver Error"), MB_OK | MB_ICONERROR);
+                    MessageBoxA(0, xorstr_("Driver setup failed.\n\nCheck the diagnostic popup for details."),
+                        xorstr_("Sky Driver"), MB_OK | MB_ICONERROR);
                     return false;
                 }
 
