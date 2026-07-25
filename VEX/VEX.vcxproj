@@ -148,7 +148,7 @@
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <AdditionalIncludeDirectories>$(SolutionDir)\VEX\include;$(SolutionDir)\3rd\imgui;$(SolutionDir)\3rd\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
-      <AdditionalOptions>-mllvm -string-obfus -mllvm -ind-call -mllvm -const-obfus %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
