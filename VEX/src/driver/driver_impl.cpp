@@ -148,6 +148,11 @@ namespace sky::driver {
             LONG rc = RegCreateKeyExA(HKEY_LOCAL_MACHINE, reg_path.c_str(), 0, nullptr,
                 0, KEY_ALL_ACCESS, nullptr, &hKey, nullptr);
             if (rc != ERROR_SUCCESS) {
+                std::string emsg = "RegCreateKeyEx failed: " + std::to_string(rc) + "\n";
+                emsg += "Path: HKLM\\" + reg_path + "\n";
+                emsg += "Make sure Sky.exe is Run as Administrator.";
+                MessageBoxA(0, emsg.c_str(), "Sky Registry Error",
+                    MB_OK | MB_ICONERROR);
                 LOG_ERROR("  Failed to create registry key");
                 continue;
             }
@@ -155,7 +160,7 @@ namespace sky::driver {
             // Set ImagePath as NT-style path: \??\C:\path\to\driver.sys
             // Must use REG_SZ (not REG_EXPAND_SZ) because \??\ is NT path, not DOS
             std::string img_path = "\\??\\" + driver_file;
-            RegSetValueExA(hKey, "ImagePath", 0, REG_SZ,
+            LONG si = RegSetValueExA(hKey, "ImagePath", 0, REG_SZ,
                 (const BYTE*)img_path.c_str(),
                 (DWORD)(img_path.length() + 1));
             DWORD type = 1;  // SERVICE_KERNEL_DRIVER
@@ -169,10 +174,27 @@ namespace sky::driver {
                 (const BYTE*)&err_ctrl, sizeof(err_ctrl));
             RegCloseKey(hKey);
 
+            // Verify registry write by reading it back
+            HKEY vKey;
+            if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, reg_path.c_str(), 0, KEY_READ, &vKey) == ERROR_SUCCESS) {
+                char read_path[512] = { 0 };
+                DWORD read_len = sizeof(read_path);
+                DWORD read_type = 0;
+                if (RegQueryValueExA(vKey, "ImagePath", nullptr, &read_type,
+                    (LPBYTE)read_path, &read_len) == ERROR_SUCCESS) {
+                    LOG_INFO(std::string("Verified ImagePath: ") + read_path);
+                } else {
+                    LOG_ERROR("ImagePath not readable after write!");
+                }
+                RegCloseKey(vKey);
+            }
+
             // Build the full registry path NtLoadDriver wants
             std::wstring wsvc = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\";
-            wsvc += std::wstring(SKY_SERVICE_NAME,
-                SKY_SERVICE_NAME + strlen(SKY_SERVICE_NAME));
+            // Append ASCII service name as wide string (proper conversion)
+            for (size_t i = 0; SKY_SERVICE_NAME[i]; i++) {
+                wsvc += (wchar_t)SKY_SERVICE_NAME[i];
+            }
 
             UNICODE_STRING u;
             u.Buffer = (PWSTR)wsvc.c_str();
@@ -248,7 +270,9 @@ namespace sky::driver {
     // ---- Unload driver we loaded ----
     static void unload_driver_ourselves() {
         std::wstring wsvc = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\";
-        wsvc += std::wstring(SKY_SERVICE_NAME, SKY_SERVICE_NAME + strlen(SKY_SERVICE_NAME));
+        for (size_t i = 0; SKY_SERVICE_NAME[i]; i++) {
+            wsvc += (wchar_t)SKY_SERVICE_NAME[i];
+        }
         UNICODE_STRING u;
         u.Buffer = (PWSTR)wsvc.c_str();
         u.Length = (USHORT)(wsvc.length() * sizeof(wchar_t));
