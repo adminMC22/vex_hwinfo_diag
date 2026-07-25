@@ -21,7 +21,7 @@ jobs:
     - name: Build
       working-directory: ${{ github.workspace }}
       run: |
-        MSBuild.exe VEX.sln /p:Configuration=Release /p:Platform=x64 /nologo /v:q
+        MSBuild.exe VEX.sln /p:Configuration=Release /p:Platform=x64 /nologo /v:normal 2>&1
       env:
         PreferredToolArchitecture: x64
 
