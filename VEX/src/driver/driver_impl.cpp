@@ -13,6 +13,7 @@
 #include <intrin.h>
 
 #pragma comment(lib, "ntdll.lib")
+#pragma comment(lib, "advapi32.lib")
 
 namespace sky::driver {
 
@@ -39,12 +40,120 @@ namespace sky::driver {
         "\\\\.\\HWiNFO32",
         "\\\\.\\HWiNFO64",
         "\\\\.\\HWiNFO_0",
+        "\\\\.\\HWiNFO_V2",
+        "\\\\.\\HWiNFOMap",
+        "\\\\.\\HWiNFO_CORE",
         nullptr
     };
 
     HANDLE g_hwinfo_device = INVALID_HANDLE_VALUE;
 
+    // ---- Driver auto-load helper ----
+    // Tries to start or load the HWiNFO kernel driver via SCM
+    static bool ensure_hwinfo_driver_loaded() {
+        // Known driver file names
+        const char* DRIVER_FILES[] = {
+            "hwinfo64.sys",
+            "hwinfo.sys",
+            nullptr
+        };
+        // Known install directories
+        const char* INSTALL_DIRS[] = {
+            "C:\\Program Files\\HWiNFO64\\",
+            "C:\\Program Files (x86)\\HWiNFO\\",
+            "C:\\Program Files\\HWiNFO\\",
+            nullptr
+        };
+
+        // Step 1: Try to start existing HWiNFO service
+        SC_HANDLE sc_manager = OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT);
+        if (sc_manager) {
+            const char* SERVICE_NAMES[] = {
+                "HWiNFO_SERVICE",
+                "HWiNFO64",
+                "HWiNFO",
+                nullptr
+            };
+            for (int s = 0; SERVICE_NAMES[s]; s++) {
+                SC_HANDLE sc_service = OpenServiceA(sc_manager, SERVICE_NAMES[s], SERVICE_START | SERVICE_QUERY_STATUS);
+                if (sc_service) {
+                    // Check if already running
+                    SERVICE_STATUS status;
+                    if (QueryServiceStatus(sc_service, &status) && status.dwCurrentState == SERVICE_STOPPED) {
+                        // Start it
+                        StartService(sc_service, 0, nullptr);
+                        // Wait briefly for driver to initialize
+                        Sleep(1000);
+                    }
+                    CloseServiceHandle(sc_service);
+                    CloseServiceHandle(sc_manager);
+                    return true; // If the service exists, the driver should be loadable
+                }
+            }
+            CloseServiceHandle(sc_manager);
+        }
+
+        // Step 2: No service found — try to install+start driver manually
+        // This requires running as Admin (which Sky.exe does)
+        std::string driver_path;
+        for (int d = 0; DRIVER_FILES[d]; d++) {
+            for (int i = 0; INSTALL_DIRS[i]; i++) {
+                std::string test_path = std::string(INSTALL_DIRS[i]) + DRIVER_FILES[d];
+                DWORD attr = GetFileAttributesA(test_path.c_str());
+                if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                    driver_path = test_path;
+                    break;
+                }
+            }
+            if (!driver_path.empty()) break;
+        }
+
+        if (driver_path.empty()) {
+            return false; // Can't find driver file anywhere
+        }
+
+        // Install and start the driver
+        sc_manager = OpenSCManager(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
+        if (!sc_manager) {
+            return false;
+        }
+
+        SC_HANDLE sc_service = CreateServiceA(sc_manager,
+            "HWiNFO_SERVICE", "HWiNFO Kernel Driver",
+            SERVICE_ALL_ACCESS, SERVICE_KERNEL_DRIVER,
+            SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+            driver_path.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr);
+
+        if (!sc_service) {
+            DWORD err = GetLastError();
+            if (err == ERROR_SERVICE_EXISTS || err == ERROR_DUPLICATE_SERVICE_NAME) {
+                // Already exists, try to open it
+                sc_service = OpenServiceA(sc_manager, "HWiNFO_SERVICE", SERVICE_START);
+            }
+        }
+
+        if (sc_service) {
+            if (!StartService(sc_service, 0, nullptr)) {
+                DWORD err = GetLastError();
+                // ERROR_SERVICE_ALREADY_RUNNING is fine
+                if (err != ERROR_SERVICE_ALREADY_RUNNING) {
+                    CloseServiceHandle(sc_service);
+                    CloseServiceHandle(sc_manager);
+                    return false;
+                }
+            }
+            CloseServiceHandle(sc_service);
+            CloseServiceHandle(sc_manager);
+            Sleep(1000); // Wait for driver to start
+            return true;
+        }
+
+        CloseServiceHandle(sc_manager);
+        return false;
+    }
+
     static bool open_hwinfo_device() {
+        // First try all known device paths
         for (int i = 0; DEVICE_PATHS[i]; i++) {
             g_hwinfo_device = CreateFileA(DEVICE_PATHS[i],
                 GENERIC_READ | GENERIC_WRITE,
@@ -56,8 +165,26 @@ namespace sky::driver {
                 return true;
             }
         }
+
+        // Try to auto-load the HWiNFO driver
+        LOG_INFO("Device not found, attempting to load HWiNFO driver...");
+        if (ensure_hwinfo_driver_loaded()) {
+            // Retry opening device
+            Sleep(500);
+            for (int i = 0; DEVICE_PATHS[i]; i++) {
+                g_hwinfo_device = CreateFileA(DEVICE_PATHS[i],
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    nullptr, OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
+                    LOG_INFO(std::string("Opened device (after driver load): ") + DEVICE_PATHS[i]);
+                    return true;
+                }
+            }
+        }
+
         LOG_ERROR("Failed to open any HWiNFO device");
-        LOG_ERROR("Make sure HWiNFO64 is running as Administrator");
         return false;
     }
 

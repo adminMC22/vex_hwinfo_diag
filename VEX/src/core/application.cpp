@@ -46,7 +46,13 @@ namespace sky::core {
 
                 if (!sky::driver::g_driver->setup()) {
                     LOG_WARNING("Failed to setup driver");
-                    MessageBoxA(0, xorstr_("Failed to setup HWiNFO64 driver.\n\nTry running HWiNFO64 first.\nIf it's running, the driver handle might be busy.\n\nClose HWiNFO64 and restart it, then try again."), xorstr_("Driver Error"), MB_OK | MB_ICONERROR);
+                    MessageBoxA(0, xorstr_("Failed to connect to HWiNFO64 kernel driver.\n\n"
+                        "Troubleshooting:\n"
+                        "1. Make sure HWiNFO64 is installed and has been run as Admin at least once\n"
+                        "2. If just rebooted, run HWiNFO64 as Admin once to load the driver\n"
+                        "3. Or restart HWiNFO64 in normal mode after running as Admin\n\n"
+                        "The cheat auto-loads the HWiNFO driver if found, but it needs\n"
+                        "the driver to be present on your system."), xorstr_("Driver Error"), MB_OK | MB_ICONERROR);
                     return false;
                 }
 
