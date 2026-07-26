@@ -46,7 +46,12 @@ namespace sky::core {
 
                 if (!sky::driver::g_driver->setup()) {
                     LOG_WARNING("Failed to setup driver");
-                    MessageBoxA(0, xorstr_("Driver setup failed.\n\nCheck the diagnostic popup for details."),
+                    MessageBoxA(0, xorstr_("Driver setup failed.\n\n"
+                        "Check the console window for detailed diagnostics.\n\n"
+                        "Most common fix:\n"
+                        "1. Run HWiNFO64 as Admin\n"
+                        "2. Keep HWiNFO64 running\n"
+                        "3. Run Sky.exe as Admin"),
                         xorstr_("Sky Driver"), MB_OK | MB_ICONERROR);
                     return false;
                 }

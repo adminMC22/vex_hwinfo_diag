@@ -6,10 +6,13 @@
 #include "src/core/application.cpp"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
-    /*AllocConsole();
+    // Enable console for diagnostics
+    AllocConsole();
     freopen("CONOUT$", "w", stdout);
     freopen("CONIN$", "r", stdin);
-    freopen("CONOUT$", "w", stderr);*/
+    freopen("CONOUT$", "w", stderr);
+
+    SetConsoleTitleA("Sky - Diagnostics");
 
     // Initialize logger after console allocation
     sky::utils::initialize_logger(sky::utils::LogLevel::DEBUG);
