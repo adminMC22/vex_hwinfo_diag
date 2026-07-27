@@ -450,21 +450,23 @@ namespace sky::driver {
             uint8_t buf[0x1000] = {};
             DWORD returned = 0;
 
-            // Format A: [8 padding][8 address] single buffer
+            // Format A: [8 padding][8 address] — RTCore64 METHOD_BUFFERED
+            // Input:  exactly 16 bytes (8 reserved + 8 address)
+            // Output: 16 + chunk bytes (8 reserved + 8 address + data)
             {
+                memset(buf, 0, 16);
                 uint64_t* p = (uint64_t*)buf;
-                p[0] = 0;
                 p[1] = 0x1000;
 
                 BOOL ok = DeviceIoControl(g_hwinfo_device, code,
-                    buf, 16 + 0x100,
-                    buf, 16 + 0x100,
+                    buf, 16,                  // input: exactly 16 bytes header
+                    buf, 16 + 0x100,          // output: header + data space
                     &returned, nullptr);
 
                 if (!ok) {
                     DWORD err = GetLastError();
                     LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " Format A failed (GetLastError=" + std::to_string(err) + ")");
+                        " Hdr failed (GLE=" + std::to_string(err) + ")");
                 } else {
                     uint8_t* data = buf + 16;
                     bool has_data = false;
@@ -472,8 +474,8 @@ namespace sky::driver {
                         if (data[i] != 0) { has_data = true; break; }
                     }
                     LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " Format A ok (returned=" + std::to_string(returned) +
-                        " has_data=" + (has_data ? "yes" : "no") + ")");
+                        " Hdr ok (ret=" + std::to_string(returned) +
+                        " data=" + (has_data ? "yes" : "no") + ")");
                     if (has_data || returned > 16) {
                         s_ioctl_read = code;
                         return true;
@@ -481,7 +483,7 @@ namespace sky::driver {
                 }
             }
 
-            // Format B: just address (8 bytes)
+            // Format B: 8 bytes address only, separate output buffer
             {
                 uint64_t addr = 0x1000;
                 uint8_t out[0x100] = {};
@@ -493,15 +495,15 @@ namespace sky::driver {
                 if (!ok) {
                     DWORD err = GetLastError();
                     LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " Format B failed (GetLastError=" + std::to_string(err) + ")");
+                        " Addr failed (GLE=" + std::to_string(err) + ")");
                 } else {
                     bool has_data = false;
                     for (int i = 0; i < 16; i++) {
                         if (out[i] != 0) { has_data = true; break; }
                     }
                     LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " Format B ok (returned=" + std::to_string(returned) +
-                        " has_data=" + (has_data ? "yes" : "no") + ")");
+                        " Addr ok (ret=" + std::to_string(returned) +
+                        " data=" + (has_data ? "yes" : "no") + ")");
                     if (has_data || returned > 0) {
                         s_ioctl_read = code;
                         return true;
@@ -527,24 +529,22 @@ namespace sky::driver {
         while (remaining > 0) {
             size_t chunk = (remaining > MAX_READ) ? MAX_READ : remaining;
 
-            // RTCore64 format: single buffer [8 padding][8 address][data...]
-            // The driver reads from this buffer (input) and writes data starting at offset 16
+            // RTCore64 METHOD_BUFFERED format:
+            //   Input:  16 bytes header [8 reserved][8 address]
+            //   Output: 16 + chunk bytes [8 reserved][8 address][data]
             uint8_t iobuf[0x1100] = {};
-            uint64_t* p = (uint64_t*)iobuf;
-            p[0] = 0;                          // padding
-            p[1] = (uint64_t)(phys_addr + off); // physical address
+            *(uint64_t*)(iobuf + 8) = (uint64_t)(phys_addr + off);
 
-            // Send 16 bytes input, receive 16+chunk bytes output (data at offset 16)
             BOOL ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
-                iobuf, 16 + (DWORD)chunk,
-                iobuf, 16 + (DWORD)chunk,
+                iobuf, 16,                      // input: exactly 16 bytes
+                iobuf, 16 + (DWORD)chunk,       // output: 16 header + data
                 &returned, nullptr);
 
             if (ok) {
-                // Data should be at offset 16 in the output buffer
+                // Data starts at offset 16 in output
                 memcpy((BYTE*)buffer + off, iobuf + 16, chunk);
             } else {
-                // Fallback: try addr-only format
+                // Fallback: try addr-only format (8 bytes input, separate output)
                 uint64_t addr = phys_addr + off;
                 ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
                     &addr, sizeof(addr),
