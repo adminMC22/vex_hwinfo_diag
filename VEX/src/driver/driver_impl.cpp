@@ -1,6 +1,7 @@
 #include "../../include/driver/driver_context.hpp"
 #include "../../include/utils/logger.hpp"
 #include <Windows.h>
+#include <tlhelp32.h>
 #include <winternl.h>
 #include <ntstatus.h>
 #include <string>
@@ -473,6 +474,75 @@ namespace sky::driver {
     }
 
     // ============================================================
+    // Kernel virtual → physical translation via physical scan
+    // ============================================================
+    // RTCore64 only reads physical addresses. To read kernel virtual
+    // addresses (e.g. vgk.sys data), we need the kernel virtual-to-
+    // physical offset. We find it by scanning physical memory for
+    // ntoskrnl.exe's PE header signature.
+    static uintptr_t s_kernel_vbase = 0;
+    static uintptr_t s_kernel_pbase = 0;
+    static bool s_kernel_offset_ready = false;
+
+    static bool init_kernel_phys_offset() {
+        if (s_kernel_offset_ready) return s_kernel_pbase != 0;
+        s_kernel_offset_ready = true;
+
+        // Get ntoskrnl.exe virtual base from system module list
+        ULONG size = 0;
+        NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, NULL, 0, &size);
+        if (size == 0) return false;
+
+        std::vector<uint8_t> buf(size);
+        status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, buf.data(), size, &size);
+        if (!NT_SUCCESS(status)) return false;
+
+        auto modules = (PRTL_PROCESS_MODULES)buf.data();
+        for (ULONG i = 0; i < modules->NumberOfModules; ++i) {
+            auto& mod = modules->Modules[i];
+            std::string name((char*)mod.FullPathName + mod.OffsetToFileName);
+            if (name == "ntoskrnl.exe") {
+                s_kernel_vbase = (uintptr_t)mod.ImageBase;
+                LOG_INFO("ntoskrnl virtual: 0x" + std::format("{:x}", s_kernel_vbase));
+                break;
+            }
+        }
+        if (s_kernel_vbase == 0) return false;
+
+        // Scan physical memory for the PE signature (MZ)
+        // Kernel is typically in the first 128MB of physical memory
+        constexpr uintptr_t MAX_PHYS = 0x8000000; // 128MB
+        uint8_t page[0x1000];
+        for (uintptr_t pa = 0; pa < MAX_PHYS; pa += 0x1000) {
+            if (!read_physical(pa, page, 0x1000)) continue;
+            if (page[0] != 'M' || page[1] != 'Z') continue;
+
+            uint32_t pe_off;
+            memcpy(&pe_off, page + 0x3C, sizeof(pe_off));
+            if (pe_off > 0x1000 - 4) continue;
+            if (page[pe_off] != 'P' || page[pe_off + 1] != 'E') continue;
+
+            s_kernel_pbase = pa;
+            break;
+        }
+
+        if (s_kernel_pbase == 0) {
+            LOG_WARNING("kernel physical scan: not found in first 128MB");
+            return false;
+        }
+
+        LOG_INFO("ntoskrnl physical: 0x" + std::format("{:x}", s_kernel_pbase));
+        return true;
+    }
+
+    static uintptr_t kernel_va_to_pa(uintptr_t va) {
+        if (!s_kernel_offset_ready && !init_kernel_phys_offset())
+            return 0;
+        if (s_kernel_pbase == 0) return 0;
+        return va - s_kernel_vbase + s_kernel_pbase;
+    }
+
+    // ============================================================
     // HWiNFO driver implementation (now multi-driver)
     // ============================================================
     class HWiNFODriver : public IDriver {
@@ -509,7 +579,44 @@ namespace sky::driver {
 
         bool attach_process(const std::wstring& name) override {
             LOG_INFO("attach_process: " + std::string(name.begin(), name.end()));
-            return true;
+            // Enumerate processes to find the target
+            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snap == INVALID_HANDLE_VALUE) {
+                LOG_ERROR("attach_process: CreateToolhelp32Snapshot failed");
+                return false;
+            }
+            PROCESSENTRY32W pe = { sizeof(pe) };
+            bool found = false;
+            if (Process32FirstW(snap, &pe)) {
+                do {
+                    if (_wcsicmp(pe.szExeFile, name.c_str()) == 0) {
+                        m_pid = pe.th32ProcessID;
+                        found = true;
+                        break;
+                    }
+                } while (Process32NextW(snap, &pe));
+            }
+            CloseHandle(snap);
+            if (!found) {
+                LOG_WARNING("attach_process: process \"" + std::string(name.begin(), name.end()) + "\" not found");
+                return false;
+            }
+            LOG_INFO("attach_process: found PID=" + std::to_string(m_pid));
+
+            // Get base address from module snapshot
+            HANDLE mod_snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, m_pid);
+            if (mod_snap != INVALID_HANDLE_VALUE) {
+                MODULEENTRY32W me = { sizeof(me) };
+                if (Module32FirstW(mod_snap, &me)) {
+                    m_base = (uintptr_t)me.modBaseAddr;
+                    LOG_INFO("attach_process: base=0x" + std::format("{:x}", m_base));
+                }
+                CloseHandle(mod_snap);
+            }
+            if (m_base == 0) {
+                LOG_WARNING("attach_process: could not get base address");
+            }
+            return m_pid != 0;
         }
 
         bool attach_process(uint32_t pid) override {
@@ -531,6 +638,11 @@ namespace sky::driver {
                 if (!phys) return false;
                 return read_physical(phys, buf, sz);
             }
+            // Kernel virtual address — translate via kernel offset
+            if (addr >= 0xFFFF800000000000ULL) {
+                uintptr_t phys = kernel_va_to_pa(addr);
+                if (phys) return read_physical(phys, buf, sz);
+            }
             return read_physical(addr, buf, sz);
         }
 
@@ -546,7 +658,34 @@ namespace sky::driver {
         }
 
         bool stream_mode(HWND, uint32_t) override { return false; }
-        uintptr_t get_kernel_base(const std::string&) override { return 0; }
+        uintptr_t get_kernel_base(const std::string& module_name) override {
+            // Enumerate kernel modules via NtQuerySystemInformation
+            ULONG size = 0;
+            NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, NULL, 0, &size);
+            if (size == 0) {
+                return 0;
+            }
+
+            std::vector<uint8_t> buf(size);
+            status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, buf.data(), size, &size);
+            if (!NT_SUCCESS(status)) {
+                return 0;
+            }
+
+            auto modules = (PRTL_PROCESS_MODULES)buf.data();
+            for (ULONG i = 0; i < modules->NumberOfModules; ++i) {
+                auto& mod = modules->Modules[i];
+                std::string name((char*)mod.FullPathName + mod.OffsetToFileName);
+                if (_stricmp(name.c_str(), module_name.c_str()) == 0) {
+                    uintptr_t base = (uintptr_t)mod.ImageBase;
+                    LOG_INFO("get_kernel_base: " + module_name + " -> 0x" + std::format("{:x}", base));
+                    return base;
+                }
+            }
+
+            LOG_WARNING("get_kernel_base: " + module_name + " not found");
+            return 0;
+        }
         void* find_pattern(uintptr_t, const char*, const char*) override { return nullptr; }
 
         void set_dir_base(void* dir) override {

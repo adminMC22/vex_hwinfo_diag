@@ -153,12 +153,17 @@ namespace sky::game::engine {
 
     uintptr_t GameEngine::resolve_world_address() {
         auto pml4 = m_vgk->find_pml4_base();
+        if (pml4.PML4Base == 0 && pml4.DecryptedClonedCr3 == 0) {
+            LOG_WARNING("resolve_world: PML4 is all zero — VGK find_pml4_base failed");
+        }
+
         auto offset = m_uworld_offset.load();
         if (offset) {
             sky::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
             m_needs_refresh.store(false);
             auto world_ptr = sky::driver::g_driver->read<uintptr_t>(pml4.PML4Base + offset);
             if(!world_ptr) {
+                LOG_WARNING("resolve_world: cached offset 0x" + std::format("{:x}", offset) + " read returned 0");
                 m_uworld_offset.store(0);
                 m_needs_refresh.store(true);
             }
@@ -168,13 +173,25 @@ namespace sky::game::engine {
         if (!m_needs_refresh.load()) {
             sky::driver::g_driver->set_dir_base((void*)0);
             auto base = sky::driver::g_driver->get_base_address();
+            if (base == 0) {
+                LOG_WARNING("resolve_world: get_base_address returned 0");
+            }
             auto world = sky::driver::g_driver->read<uintptr_t>(base + offsets::GWorld);
+            if (world == 0) {
+                LOG_WARNING("resolve_world: GWorld offset read returned 0 at base+0x" + 
+                    std::format("{:x}", offsets::GWorld));
+            }
             auto world_ptr = sky::driver::g_driver->read<uintptr_t>(world);
+            if (world_ptr == 0) {
+                LOG_WARNING("resolve_world: dereferenced world is null");
+            }
             auto persistent_level = sky::driver::g_driver->read<uintptr_t>(world_ptr + offsets::PersistentLevel);
             if (persistent_level == world_ptr || !persistent_level) {
                 m_needs_refresh.store(true);
+                LOG_INFO("resolve_world: direct read failed, scanning next tick");
             }
             else {
+                LOG_INFO("resolve_world: found via direct read, world=0x" + std::format("{:x}", world_ptr));
                 return world_ptr;
             }
         }
@@ -192,10 +209,13 @@ namespace sky::game::engine {
                 if (owning_world == world_ptr) {
                     m_uworld_offset.store(i);
                     m_needs_refresh.store(false);
+                    LOG_INFO("resolve_world: found via scan at offset 0x" + std::format("{:x}", i) + 
+                        ", world=0x" + std::format("{:x}", world_ptr));
                     return world_ptr;
                 }
             }
             m_needs_refresh.store(false);
+            LOG_WARNING("resolve_world: scan of 4096 entries found nothing");
         }
         return 0;
     }
