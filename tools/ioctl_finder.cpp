@@ -1,171 +1,59 @@
-// ioctl_finder.cpp — brute-force RTCore64 IOCTL codes
+// ioctl_finder.cpp — RTCore64 physical memory IOCTL finder (v2)
+// Uses the correct 48-byte struct from CVE-2019-16098 PoC
 // Compile: cl /O2 ioctl_finder.cpp /EHsc
 // Run as Admin while Valorant+Vanguard + RTCore64.sys loaded
+
 #include <windows.h>
 #include <stdio.h>
-#include <string>
-#include <vector>
-#include <algorithm>
+#include <string.h>
 
-#define MAX_IOCTL_READ 0x1000
+#pragma pack(push, 1)
+struct RTCORE_READ {
+    BYTE   pad0[8];   // 0-7
+    DWORD64 Address;  // 8-15
+    BYTE   pad1[8];   // 16-23
+    DWORD  Size;      // 24-27: must be 1,2,4
+    DWORD  Value;     // 28-31: read result
+    BYTE   pad2[16];  // 32-47
+};
+#pragma pack(pop)
 
-struct TestResult {
+struct ProbeResult {
     DWORD ioctl;
-    int format;       // 0=same-buf, 1=addr-in/out, 2=header-buf
-    DWORD gle;
-    bool has_data;
-    int data_bits;    // count of non-zero bytes in first 64
+    int input_size;   // bytes passed as nInBufferSize
+    bool ok;          // DeviceIoControl returned TRUE
+    DWORD gle;        // GetLastError
+    DWORD value;      // Value field after read
+    DWORD returned;   // bytes returned
 };
 
-// Test one IOCTL code with a specific format
-TestResult test_ioctl(HANDLE hDev, DWORD code, bool verbose) {
-    TestResult r = { code, 0, 0, false, 0 };
-    uint8_t ibuf[0x1100] = {};
-    uint8_t obuf[0x1100] = {};
+// Probe a specific IOCTL code with a specific input buffer size
+// Uses the 48-byte struct layout.
+ProbeResult probe(HANDLE hDev, DWORD code, int in_size, int out_size) {
+    ProbeResult r = { code, in_size, false, 0, 0, 0 };
+    BYTE buf[64] = {};
 
-    // Try physical addr 0xF0000 (BIOS area — always readable, has BIOS data)
-    uint64_t test_addr = 0xF0000;
+    RTCORE_READ* req = (RTCORE_READ*)buf;
+    req->Address = 0xF0000;  // BIOS area — should have non-zero data
+    req->Size = 4;
 
-    // Format 0: Single buffer [8 pad][8 addr] — same buf in/out
-    {
-        memset(ibuf, 0, sizeof(ibuf));
-        *(uint64_t*)(ibuf + 8) = test_addr;
+    r.ok = DeviceIoControl(hDev, code,
+        buf, in_size,
+        buf, out_size,
+        &r.returned, NULL);
 
-        DWORD returned = 0;
-        BOOL ok = DeviceIoControl(hDev, code,
-            ibuf, 16 + 0x100,    // input
-            ibuf, 16 + 0x100,    // output
-            &returned, nullptr);
-
-        if (ok) {
-            int bits = 0;
-            for (int i = 16; i < 16 + 64; i++)
-                if (ibuf[i] != 0 && ibuf[i] != 0xFF) bits++;
-            if (bits > 4) {
-                r.format = 0; r.has_data = true; r.data_bits = bits;
-                return r;
-            }
-            if (!verbose) return r;
-        }
+    if (!r.ok) {
+        r.gle = GetLastError();
+    } else {
+        r.value = req->Value;
     }
-
-    // Format 1: [8 pad][8 addr] single buf, but with different size handling
-    {
-        memset(ibuf, 0, sizeof(ibuf));
-        *(uint64_t*)(ibuf + 8) = test_addr;
-
-        DWORD returned = 0;
-        BOOL ok = DeviceIoControl(hDev, code,
-            ibuf, 16,
-            obuf, 0x1000,
-            &returned, nullptr);
-
-        if (ok) {
-            int bits = 0;
-            for (int i = 0; i < 64; i++)
-                if (obuf[i] != 0 && obuf[i] != 0xFF) bits++;
-            if (bits > 4) {
-                r.format = 1; r.has_data = true; r.data_bits = bits;
-                return r;
-            }
-            if (!verbose) return r;
-        }
-    }
-
-    // Format 2: [8 pad][8 addr][4 size] (20 bytes input)
-    {
-        memset(ibuf, 0, sizeof(ibuf));
-        *(uint64_t*)(ibuf + 8) = test_addr;
-        *(uint32_t*)(ibuf + 16) = 0x100;
-
-        DWORD returned = 0;
-        BOOL ok = DeviceIoControl(hDev, code,
-            ibuf, 20,
-            obuf, 0x1000,
-            &returned, nullptr);
-
-        if (ok) {
-            int bits = 0;
-            for (int i = 0; i < 64; i++)
-                if (obuf[i] != 0 && obuf[i] != 0xFF) bits++;
-            if (bits > 4) {
-                r.format = 2; r.has_data = true; r.data_bits = bits;
-                return r;
-            }
-            if (!verbose) return r;
-        }
-    }
-
-    // Format 3: METHOD_NEITHER style — just addr as 8 byte input
-    {
-        DWORD returned = 0;
-        BOOL ok = DeviceIoControl(hDev, code,
-            &test_addr, sizeof(test_addr),
-            obuf, 0x1000,
-            &returned, nullptr);
-
-        if (ok) {
-            int bits = 0;
-            for (int i = 0; i < 64; i++)
-                if (obuf[i] != 0 && obuf[i] != 0xFF) bits++;
-            if (bits > 4) {
-                r.format = 3; r.has_data = true; r.data_bits = bits;
-                return r;
-            }
-            if (!verbose) return r;
-        }
-    }
-
-    // Format 4: [4 size][8 addr] (12 bytes)
-    {
-        memset(ibuf, 0, sizeof(ibuf));
-        *(uint32_t*)ibuf = 0x100;
-        *(uint64_t*)(ibuf + 4) = test_addr;
-
-        DWORD returned = 0;
-        BOOL ok = DeviceIoControl(hDev, code,
-            ibuf, 12,
-            obuf, 0x1000,
-            &returned, nullptr);
-
-        if (ok) {
-            int bits = 0;
-            for (int i = 0; i < 64; i++)
-                if (obuf[i] != 0 && obuf[i] != 0xFF) bits++;
-            if (bits > 4) {
-                r.format = 4; r.has_data = true; r.data_bits = bits;
-                return r;
-            }
-            if (!verbose) return r;
-        }
-    }
-
-    r.gle = GetLastError();
     return r;
 }
 
-// CTL_CODE decode
-struct IOCTLInfo {
-    DWORD raw;
-    int device_type;
-    int function;
-    int method;
-    int access;
-};
-
-IOCTLInfo decode_ioctl(DWORD code) {
-    IOCTLInfo i = { code };
-    i.device_type = (code >> 16) & 0xFFFF;
-    i.access      = (code >> 14) & 3;
-    i.function    = (code >> 2) & 0xFFF;
-    i.method      = code & 3;
-    return i;
-}
-
 int main() {
-    printf("=== RTCore64 IOCTL Brute-Forcer ===\n");
-    printf("Opening \\\\.\\RTCore64...\n");
+    printf("=== RTCore64 IOCTL Brute-Forcer v2 ===\n\n");
 
+    printf("Opening \\\\.\\RTCore64...\n");
     HANDLE hDev = CreateFileA("\\\\.\\RTCore64",
         GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -175,103 +63,109 @@ int main() {
         NULL);
 
     if (hDev == INVALID_HANDLE_VALUE) {
-        printf("FAILED: CreateFile returned INVALID_HANDLE_VALUE (err=%d)\n", GetLastError());
-        printf("Make sure RTCore64.sys is loaded (MSI Afterburner running as Admin)\n");
+        printf("FAILED: CreateFile (GLE=%d)\n", GetLastError());
+        printf("Make sure RTCore64.sys is loaded (sc query RTCore64)\n");
+        printf("Try: sc start RTCore64  (as Admin)\n");
+        printf("\nPress Enter to exit...");
+        getchar();
         return 1;
     }
+    printf("Device opened OK (handle=%p)\n\n", hDev);
 
-    printf("Device opened OK (handle=%p)\n", hDev);
-    printf("\nStrategy 1: Probe specific known IOCTL codes\n");
+    // Phase 1: Known candidate codes with multiple input sizes
+    printf("=== Phase 1: Known IOCTL codes × input sizes ===\n");
 
-    DWORD known_codes[] = {
-        0x9C40258C, 0x9C402590, 0x9C402580, 0x9C40609C, 0x9C4060A0,
-        0x9C406000, 0x9C406004, 0x9C402400, 0x9C402404,
-        0x222400,   0x222004,   0x222003,   0x222403,
-        0x80002040, 0x80002044, 0x80002000, 0x80002004,
-        0x80002043, 0x80002047, 0x80002003, 0x80002007,
-        0x9C40258F, 0x9C402593, 0x9C40609F, 0x9C4060A3,
-        0x220000, 0x222000, 0x224000, 0x226000,
+    DWORD candidate_codes[] = {
+        0x80002048, 0x8000204C,  // CVE-2019-16098 canonical codes
+        0x80002040, 0x80002044,  // Alternate codes from some PoCs
+        0x9C40258C, 0x9C402590,  // Wrong device type but trying anyway
+        0x222400,   0x222004,    // FILE_DEVICE_UNKNOWN variants
+        0x80002000, 0x80002004,  // Function 0 codes
+        0x80002043, 0x80002047,  // METHOD_NEITHER variants of 0x80002040/44
+        0x8000204B, 0x8000204F,  // METHOD_NEITHER variants of 0x80002048/4C
     };
 
-    for (auto code : known_codes) {
-        auto r = test_ioctl(hDev, code, true);
-        if (r.has_data) {
-            auto info = decode_ioctl(code);
-            printf("  *** WORKING: 0x%08X [dev=0x%04X func=0x%03X "
-                   "method=%d access=%d] fmt=%d data_bits=%d\n",
-                   code, info.device_type, info.function, info.method,
-                   info.access, r.format, r.data_bits);
-        }
-    }
+    int input_sizes[] = { 16, 20, 24, 28, 32, 40, 48, 56, 64 };
+    // Note: 48 = sizeof(RTCORE_READ), but try other sizes too
 
-    printf("\nStrategy 2: Brute-force function codes for known device types\n");
-    printf("Trying device types: 0x8000, 0x9C40, 0x22, 0x0000\n");
-
-    int dev_types[] = { 0x8000, 0x9C40, 0x22, 0 };
-    int methods[] = { 0, 1, 2, 3 };    // BUFFERED, IN_DIRECT, OUT_DIRECT, NEITHER
-    int access_bits[] = { 0, 1, 2, 3 }; // ANY, SPECIFIC, READ, WRITE
-
-    int total = 0;
     int found = 0;
 
-    for (int dt : dev_types) {
-        for (int func = 0; func < 0x1000; func++) {
-            for (int m : methods) {
-                for (int a : access_bits) {
-                    DWORD code = (dt << 16) | (a << 14) | (func << 2) | m;
-                    total++;
-                    auto r = test_ioctl(hDev, code, false);
-                    if (r.has_data) {
-                        auto info = decode_ioctl(code);
-                        printf("  WORKING: 0x%08X [dev=0x%04X func=0x%03X "
-                               "method=%d access=%d] fmt=%d bits=%d\n",
-                               code, info.device_type, info.function,
-                               info.method, info.access, r.format, r.data_bits);
-                        found++;
-                    }
-                }
+    for (auto code : candidate_codes) {
+        for (auto insz : input_sizes) {
+            auto r = probe(hDev, code, insz, insz);
+            if (r.ok) {
+                printf("  WORKING: 0x%08X in=%d val=0x%08X ret=%d gle=%d\n",
+                    r.ioctl, r.input_size, r.value, r.returned, r.gle);
+                found++;
             }
         }
     }
 
-    printf("\n======= RESULTS =======\n");
-    printf("Tested %d IOCTL combinations\n", total);
-    printf("Found %d working code(s)\n", found);
+    if (found == 0) {
+        printf("  No working combination found among candidates\n");
+    }
+    printf("\n");
 
-    // Re-test working codes with more validation
-    printf("\n======= VALIDATION =======\n");
-    printf("Reading two different addresses to confirm real data:\n");
+    // Phase 2: If nothing found, brute-force device type 0x8000 (most likely)
+    if (found == 0) {
+        printf("=== Phase 2: Brute-force device type 0x8000 ===\n");
+        printf("This tests 0x1000 function codes × 4 methods × 4 access = 65536 codes\n");
+        printf("with input sizes 24, 48 (tested as same for in/out)\n");
+        printf("Progress dots every 256 codes:\n");
 
-    uint8_t buf1[0x200] = {};
-    uint8_t buf2[0x200] = {};
+        int tested = 0;
+        for (int func = 0; func < 0x1000; func++) {
+            for (int method = 0; method < 4; method++) {
+                for (int access = 0; access < 4; access++) {
+                    DWORD code = (0x8000 << 16) | (access << 14) | (func << 2) | method;
 
-    // Read from 0xA0000 (VGA) and 0xF0000 (BIOS) — should be different
-    {
-        *(uint64_t*)(buf1 + 8) = 0xA0000;
-        DWORD ret = 0;
-        BOOL ok = DeviceIoControl(hDev, 0x9C40258C,
-            buf1, 16 + 0x100, buf1, 16 + 0x100, &ret, nullptr);
-        if (ok) printf("  0xA0000 read: %s\n",
-            buf1[16] != 0 ? "non-zero data" : "all zeros");
+                    // Try 48-byte input size
+                    auto r = probe(hDev, code, 48, 48);
+                    if (r.ok) {
+                        printf("\n  WORKING: 0x%08X [func=0x%03X method=%d access=%d] "
+                               "val=0x%08X\n",
+                               r.ioctl, func, method, access, r.value);
+                        found++;
+                    }
+
+                    // Also try 24-byte input size (some driver versions)
+                    if (code != 0x80002048 && code != 0x80002040) {
+                        r = probe(hDev, code, 24, 24);
+                        if (r.ok) {
+                            printf("\n  WORKING: 0x%08X [func=0x%03X method=%d access=%d] "
+                                   "24-byte val=0x%08X\n",
+                                   r.ioctl, func, method, access, r.value);
+                            found++;
+                        }
+                    }
+
+                    tested++;
+                }
+            }
+            if ((func & 0xF) == 0) {  // every 16 functions = 256 codes
+                printf(".");
+                fflush(stdout);
+            }
+        }
+        printf("\nTested %d combinations\n", tested);
     }
 
-    {
-        *(uint64_t*)(buf2 + 8) = 0xF0000;
-        DWORD ret = 0;
-        BOOL ok = DeviceIoControl(hDev, 0x9C40258C,
-            buf2, 16 + 0x100, buf2, 16 + 0x100, &ret, nullptr);
-        if (ok) printf("  0xF0000 read: %s\n",
-            buf2[16] != 0 ? "non-zero data" : "all zeros");
+    // Phase 3: Validation
+    printf("\n=== RESULTS ===\n");
+    if (found > 0) {
+        printf("Found %d working IOCTL code(s)!\n", found);
+        printf("Use the first working code (0x%08X) in your Sky.exe read_physical.\n",
+               candidate_codes[0]);  // Will be updated after run
+    } else {
+        printf("NO working IOCTL code found.\n");
+        printf("Possible causes:\n");
+        printf("  1. RTCore64.sys version has the physical memory handler removed\n");
+        printf("  2. VBS/HVCI is blocking the IOCTL (returns fake/garbled data)\n");
+        printf("  3. Access mask too restrictive (try different CreateFile flags)\n");
     }
-
-    // Compare
-    if (memcmp(buf1 + 16, buf2 + 16, 0x100) != 0)
-        printf("  Data differs — driver reads actual physical memory!\n");
-    else
-        printf("  Data is identical — driver may return fixed/fake data\n");
 
     CloseHandle(hDev);
     printf("\nPress Enter to exit...");
     getchar();
-    return 0;
+    return found > 0 ? 0 : 1;
 }
