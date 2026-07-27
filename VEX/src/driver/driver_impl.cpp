@@ -450,17 +450,17 @@ namespace sky::driver {
             uint8_t buf[0x1000] = {};
             DWORD returned = 0;
 
-            // Format A: [8 padding][8 address] — RTCore64 METHOD_BUFFERED
-            // Input:  exactly 16 bytes (8 reserved + 8 address)
-            // Output: 16 + chunk bytes (8 reserved + 8 address + data)
+            // Format A: [8 padding][8 address] — single buffer, same size for in/out
+            // RTCore64 requires InputBufferLength == OutputBufferLength for
+            // METHOD_BUFFERED (driver checks both >= sizeof(RTC_READ_INPUT))
             {
-                memset(buf, 0, 16);
+                memset(buf, 0, 16 + 0x100);
                 uint64_t* p = (uint64_t*)buf;
                 p[1] = 0x1000;
 
                 BOOL ok = DeviceIoControl(g_hwinfo_device, code,
-                    buf, 16,                  // input: exactly 16 bytes header
-                    buf, 16 + 0x100,          // output: header + data space
+                    buf, 16 + 0x100,          // input: header + data space (same size as output)
+                    buf, 16 + 0x100,          // output: same
                     &returned, nullptr);
 
                 if (!ok) {

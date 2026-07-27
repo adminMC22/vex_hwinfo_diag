@@ -22,13 +22,29 @@ jobs:
       working-directory: ${{ github.workspace }}
       run: |
         MSBuild.exe Sky.sln /p:Configuration=Release /p:Platform=x64 /nologo /v:normal 2>&1
+        echo "=== Build Sky.exe done ==="
       env:
         PreferredToolArchitecture: x64
 
-    - name: Upload artifact
+    - name: Build IOCTL finder
+      working-directory: ${{ github.workspace }}
+      run: |
+        echo "=== Compiling ioctl_finder.exe ==="
+        cl.exe /O2 /EHsc /nologo tools\ioctl_finder.cpp /Feioctl_finder.exe 2>&1
+        echo "=== IOCTL finder done ==="
+
+    - name: Upload Sky artifact
       uses: actions/upload-artifact@v4
       with:
         name: Sky.exe
         path: x64/Release/Sky.exe
         compression-level: 0
         if-no-files-found: error
+
+    - name: Upload IOCTL finder artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ioctl_finder.exe
+        path: ioctl_finder.exe
+        compression-level: 0
+        if-no-files-found: warn
