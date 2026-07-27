@@ -463,6 +463,7 @@ namespace sky::driver {
     // CRITICAL: Read size is limited to 4 bytes per call.
     // For larger reads, loop 4 bytes at a time.
 
+    #pragma pack(push, 1)  // Ensure exact 48-byte layout matches driver expectations
     struct RTCoreRequest {
         uint8_t  pad0[8];    // 0-7
         uint64_t address;    // 8-15
@@ -471,6 +472,7 @@ namespace sky::driver {
         uint32_t value;      // 28-31. Output: read data. Input: write data.
         uint8_t  pad2[16];   // 32-47
     };
+    #pragma pack(pop)
     static_assert(sizeof(RTCoreRequest) == 48, "RTCoreRequest must be 48 bytes");
 
     #define RTC_IOCTL_READ  0x80002048
@@ -750,6 +752,26 @@ namespace sky::driver {
             }
             m_init = true;
             LOG_INFO("Kernel driver connected");
+
+            // Verify physical read IOCTL works
+            {
+                RTCoreRequest test_req = {};
+                test_req.address = 0xF0000;  // BIOS ROM area — valid physical address
+                test_req.size = 4;
+                DWORD returned = 0;
+                BOOL ok = DeviceIoControl(g_hwinfo_device, RTC_IOCTL_READ,
+                    &test_req, sizeof(test_req),
+                    &test_req, sizeof(test_req),
+                    &returned, nullptr);
+                if (!ok) {
+                    LOG_WARNING("RTCore64 IOCTL test failed at startup (GLE=" +
+                        std::to_string(GetLastError()) + ")");
+                } else {
+                    LOG_INFO("RTCore64 IOCTL test OK — read 4 bytes from 0xF0000: 0x" +
+                        std::format("{:08x}", test_req.value));
+                }
+            }
+
             return true;
         }
 
