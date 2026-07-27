@@ -531,23 +531,44 @@ namespace sky::driver {
         if (s_kernel_vbase == 0) return false;
 
         // Scan physical memory for the PE signature (MZ)
-        // Use dynamic scan range based on installed RAM
+        // On VBS systems, ntoskrnl pages are hypervisor-protected and invisible
+        // to MmMapIoSpace. Instead, find any kernel module (like vgk.sys) that
+        // doesn't have per-page VBS protection, and use that to derive the offset.
         MEMORYSTATUSEX mem = { sizeof(MEMORYSTATUSEX) };
         GlobalMemoryStatusEx(&mem);
         uint64_t total_phys = mem.ullTotalPhys;
-        if (total_phys < 0x20000000ULL) total_phys = 0x20000000ULL; // min 512MB
-        if (total_phys > 0x200000000ULL) total_phys = 0x200000000ULL; // cap at 128GB
-        LOG_INFO("kernel scan: scanning 0-" + std::to_string(total_phys >> 30) +
-            "GB at 256KB intervals (total RAM: " + std::to_string(total_phys >> 20) + " MB)...");
+        if (total_phys < 0x20000000ULL) total_phys = 0x20000000ULL;
+        if (total_phys > 0x200000000ULL) total_phys = 0x200000000ULL;
+        LOG_INFO("kernel scan: scanning " + std::to_string(total_phys >> 30) +
+            "GB for any kernel module (RAM: " + std::to_string(total_phys >> 20) + " MB)...");
+
+        // Save kernel module list for candidate matching
+        struct ModuleEntry { uintptr_t image_base; uint32_t image_size; std::string name; };
+        std::vector<ModuleEntry> module_list;
+        {
+            ULONG msize = 0;
+            NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, NULL, 0, &msize);
+            if (msize > 0) {
+                std::vector<uint8_t> mbuf(msize);
+                if (NT_SUCCESS(NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, mbuf.data(), msize, &msize))) {
+                    auto m = (PSYSTEM_MODULE_INFORMATION)mbuf.data();
+                    for (ULONG i = 0; i < m->Count; ++i) {
+                        auto& mod = m->Module[i];
+                        std::string n((char*)mod.FullPathName + mod.OffsetToFileName);
+                        module_list.push_back({ (uintptr_t)mod.ImageBase, mod.ImageSize, n });
+                    }
+                }
+            }
+        }
+        LOG_INFO("kernel scan: " + std::to_string(module_list.size()) + " modules loaded");
 
         uint8_t page[0x1000];
         constexpr uintptr_t STEP = 0x40000; // 256KB step
-        constexpr uint64_t PROGRESS_STEP = 0x100000000ULL; // report every 4GB
-        uint64_t next_progress = PROGRESS_STEP;
+        uint64_t next_progress = 0x100000000ULL;
         for (uint64_t pa = 0; pa < total_phys; pa += STEP) {
             if (pa >= next_progress) {
                 LOG_INFO("kernel scan: scanned " + std::to_string(pa >> 30) + "GB...");
-                next_progress += PROGRESS_STEP;
+                next_progress += 0x100000000ULL;
             }
             if (!read_physical((uintptr_t)pa, page, 0x1000)) continue;
             if (page[0] != 'M' || page[1] != 'Z') continue;
@@ -557,43 +578,31 @@ namespace sky::driver {
             if (pe_off > 0x1000 - 4) continue;
             if (page[pe_off] != 'P' || page[pe_off + 1] != 'E') continue;
 
-            // Verify SizeOfImage to confirm it's a kernel PE (not firmware/BIOS)
-            uint32_t size_of_image;
-            memcpy(&size_of_image, page + pe_off + 0x50, sizeof(size_of_image));
-            // ntoskrnl.exe is 8-15MB on typical systems
-            if (size_of_image < 0x400000 || size_of_image > 0x4000000) continue;
+            // Read ImageBase (8 bytes at PE+24+24=PE+0x30 for PE32+)
+            uintptr_t image_base = 0;
+            memcpy(&image_base, page + pe_off + 0x30, sizeof(uintptr_t));
 
-            LOG_INFO("kernel scan: found ntoskrnl candidate at phys=0x" +
-                std::format("{:x}", pa) + " size=0x" + std::format("{:x}", size_of_image));
-            s_kernel_pbase = (uintptr_t)pa;
-            break;
-        }
+            // Check if this PE's ImageBase matches any known kernel module
+            for (const auto& mod : module_list) {
+                if (image_base == mod.image_base) {
+                    LOG_INFO("kernel scan: found " + mod.name +
+                        " at phys=0x" + std::format("{:x}", pa) +
+                        " (matches virt=0x" + std::format("{:x}", mod.image_base) + ")");
 
-        if (s_kernel_pbase == 0) {
-            // Fallback: 4KB granularity scan around the formula-derived address
-            uintptr_t candidate_pa = (uintptr_t)(s_kernel_vbase - 0xFFFFF80000000000ULL);
-            LOG_INFO("kernel scan: fallback scanning 0x" +
-                std::format("{:x}", candidate_pa) + " ±32MB at 4KB");
-            uintptr_t start = (candidate_pa > 0x2000000) ? candidate_pa - 0x2000000 : 0;
-            uintptr_t end = candidate_pa + 0x2000000;
-            for (uintptr_t pa = start; pa < end; pa += 0x1000) {
-                if (!read_physical(pa, page, 0x1000)) continue;
-                if (page[0] != 'M' || page[1] != 'Z') continue;
-                uint32_t pe_off;
-                memcpy(&pe_off, page + 0x3C, sizeof(pe_off));
-                if (pe_off > 0x1000 - 4) continue;
-                if (page[pe_off] != 'P' || page[pe_off + 1] != 'E') continue;
-                uint32_t size_of_image;
-                memcpy(&size_of_image, page + pe_off + 0x50, sizeof(size_of_image));
-                if (size_of_image < 0x400000 || size_of_image > 0x4000000) continue;
-                LOG_INFO("kernel scan: found via formula fallback at phys=0x" +
-                    std::format("{:x}", pa));
-                s_kernel_pbase = pa;
-                break;
+                    // Calculate offset: kernel_offset = phys - virt
+                    // Apply to ntoskrnl: s_kernel_pbase = ntoskrnl_vbase + kernel_offset
+                    int64_t offset = (int64_t)pa - (int64_t)mod.image_base;
+                    s_kernel_pbase = (uintptr_t)((int64_t)s_kernel_vbase + offset);
+                    LOG_INFO("kernel scan: derived ntoskrnl phys=0x" +
+                        std::format("{:x}", s_kernel_pbase));
+                    break;
+                }
             }
+            if (s_kernel_pbase != 0) break;
         }
 
         if (s_kernel_pbase == 0) {
+            LOG_WARNING("kernel scan: no kernel modules found in physical memory");
             LOG_WARNING("kernel scan: not found");
             return false;
         }
