@@ -58,15 +58,24 @@ namespace sky::driver {
         for (const auto& dev : hwinfo_devices) {
             std::string path = "\\\\.\\" + dev;
             LOG_INFO("Trying device: " + path);
-            g_hwinfo_device = CreateFileA(path.c_str(),
+            // Try multiple access modes - some drivers are picky
+            DWORD access_modes[] = {
                 GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                nullptr, OPEN_EXISTING, 0, nullptr);
-            if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
-                LOG_INFO("SUCCESS: Opened device: " + path);
-                return true;
+                GENERIC_READ,
+                0,  // No access rights, just get a handle
+            };
+            for (int am = 0; am < 3; am++) {
+                g_hwinfo_device = CreateFileA(path.c_str(),
+                    access_modes[am],
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    nullptr, OPEN_EXISTING, 0, nullptr);
+                if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
+                    LOG_INFO("SUCCESS: Opened device: " + path + " (access=0x" + std::to_string(access_modes[am]) + ")");
+                    return true;
+                }
+                DWORD err = GetLastError();
+                LOG_ERROR("  Failed: err=" + std::to_string(err) + " (access=0x" + std::to_string(access_modes[am]) + ")");
             }
-            LOG_ERROR("  Failed: err=" + std::to_string(GetLastError()));
         }
         return false;
     }
@@ -80,19 +89,27 @@ namespace sky::driver {
             "\\\\.\\HWiNFO64",
             "\\\\.\\HWiNFO32",
             "\\\\.\\HWiNFO_0",
+            "\\\\.\\HWiNFO_215",
             "\\\\.\\HWiNFO_V2",
             "\\\\.\\HWiNFOMap",
             "\\\\.\\HWiNFO_CORE",
             nullptr
         };
+        DWORD access_modes[] = {
+            GENERIC_READ | GENERIC_WRITE,
+            GENERIC_READ,
+            0,
+        };
         for (int i = 0; paths[i]; i++) {
-            g_hwinfo_device = CreateFileA(paths[i],
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                nullptr, OPEN_EXISTING, 0, nullptr);
-            if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
-                LOG_INFO("Opened: " + std::string(paths[i]));
-                return true;
+            for (int am = 0; am < 3; am++) {
+                g_hwinfo_device = CreateFileA(paths[i],
+                    access_modes[am],
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    nullptr, OPEN_EXISTING, 0, nullptr);
+                if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
+                    LOG_INFO(std::string("Opened: ") + paths[i] + " (access=0x" + std::to_string(access_modes[am]) + ")");
+                    return true;
+                }
             }
         }
         return false;
