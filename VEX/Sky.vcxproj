@@ -154,7 +154,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
-      <AdditionalDependencies>freetype.lib;d3d11.lib;dxgi.lib;dwmapi.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>freetype.lib;d3d11.lib;dxgi.lib;dwmapi.lib;winhttp.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -218,6 +218,7 @@
     <ClCompile Include="src\render\render.cpp" />
     <!-- OUTSIDE unity build (compiled separately) -->
     <ClCompile Include="src\driver\driver_impl.cpp" />
+    <ClCompile Include="src\web\web_server.cpp" />
     <ClCompile Include="src\game\vgk_system.cpp" />
     <ClCompile Include="src\game\engine\game_engine.cpp" />
     <ClCompile Include="src\utils\offset_loader.cpp" />
