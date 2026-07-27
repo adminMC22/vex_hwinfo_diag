@@ -320,8 +320,8 @@ void WebServer::http_thread() {
         SOCKET client = accept(m_listen_socket, nullptr, nullptr);
         if (client == INVALID_SOCKET) continue;
 
-        // Set timeout
-        DWORD timeout = 5000;
+        // Set timeout (long enough for browser to send request)
+        DWORD timeout = 30000;
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
 
         // Read request
@@ -331,11 +331,18 @@ void WebServer::http_thread() {
 
         std::string request(buf, received);
 
-        // Check if WebSocket upgrade
-        if (request.find("Upgrade: websocket") != std::string::npos ||
-            request.find("Upgrade: WebSocket") != std::string::npos) {
-            handle_websocket(client, request);  // Pass the already-read request
+        LOG_INFO("HTTP request received: " + request.substr(0, 100));
+
+        // Check if WebSocket upgrade (case-insensitive)
+        std::string request_lower;
+        for (char c : request) request_lower += (char)tolower((unsigned char)c);
+        bool is_ws = request_lower.find("upgrade: websocket") != std::string::npos;
+
+        if (is_ws) {
+            LOG_INFO("WebSocket upgrade detected");
+            handle_websocket(client, request);
         } else {
+            LOG_INFO("HTTP request (serving page)");
             handle_http_request(client, request);
         }
     }
@@ -354,10 +361,12 @@ void WebServer::handle_http_request(SOCKET client, const std::string& request) {
 }
 
 void WebServer::handle_websocket(SOCKET client, const std::string& request) {
-    // Parse Sec-WebSocket-Key from the ALREADY-READ request
-    size_t key_pos = request.find("Sec-WebSocket-Key: ");
+    // Parse Sec-WebSocket-Key (case-insensitive search)
+    std::string req_lower;
+    for (char c : request) req_lower += (char)tolower((unsigned char)c);
+    size_t key_pos = req_lower.find("sec-websocket-key: ");
     if (key_pos == std::string::npos) { closesocket(client); return; }
-    key_pos += 19;
+    key_pos += 19;  // Length of "sec-websocket-key: "
     size_t key_end = request.find("\r\n", key_pos);
     std::string ws_key = request.substr(key_pos, key_end - key_pos);
     std::string accept_key = ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
