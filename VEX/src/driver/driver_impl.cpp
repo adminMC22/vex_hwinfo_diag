@@ -480,6 +480,7 @@ namespace sky::driver {
     #define RTC_IOCTL_READ_ALT  0x9C40258C  // fallback
 
     static DWORD s_ioctl_read = RTC_IOCTL_READ;
+    static DWORD s_ioctl_write = RTC_IOCTL_WRITE;
 
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
@@ -529,28 +530,34 @@ namespace sky::driver {
 
     static bool write_physical(uintptr_t phys_addr, const void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
-        DWORD returned = 0;
-        LARGE_INTEGER pa;
-        pa.QuadPart = static_cast<LONGLONG>(phys_addr);
-        constexpr size_t MAX_WRITE = 0x1000;
+
+        const uint8_t* src = (const uint8_t*)buffer;
         size_t remaining = size;
-        size_t offset = 0;
+        uintptr_t addr = phys_addr;
+
         while (remaining > 0) {
-            size_t chunk = (remaining > MAX_WRITE) ? MAX_WRITE : remaining;
-            LARGE_INTEGER cur;
-            cur.QuadPart = pa.QuadPart + offset;
-            std::vector<BYTE> wbuf(sizeof(LARGE_INTEGER) + chunk);
-            memcpy(wbuf.data(), &cur, sizeof(LARGE_INTEGER));
-            memcpy(wbuf.data() + sizeof(LARGE_INTEGER),
-                (BYTE*)buffer + offset, chunk);
+            uint32_t chunk = (remaining >= 4) ? 4 : (uint32_t)remaining;
+
+            RTCoreRequest req = {};
+            req.address = addr;
+            req.size = chunk;
+            memcpy(&req.value, src, chunk);  // write data
+
+            DWORD returned = 0;
             if (!DeviceIoControl(g_hwinfo_device, s_ioctl_write,
-                wbuf.data(), (DWORD)wbuf.size(),
-                nullptr, 0, &returned, nullptr)) {
+                    &req, sizeof(req),
+                    &req, sizeof(req),
+                    &returned, nullptr)) {
+                LOG_ERROR("write_physical: IOCTL failed at phys=0x" +
+                    std::format("{:x}", addr) + " GLE=" + std::to_string(GetLastError()));
                 return false;
             }
+
+            addr += chunk;
+            src += chunk;
             remaining -= chunk;
-            offset += chunk;
         }
+
         return true;
     }
 
