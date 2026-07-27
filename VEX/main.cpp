@@ -37,7 +37,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         LOG_INFO("Driver connected");
 
         // Step 2: Initialize offsets
-        sky::game::offsets::initialize();
+        ::offsets::initialize();
         LOG_INFO("Offsets initialized");
 
         // Step 3: Start web server
