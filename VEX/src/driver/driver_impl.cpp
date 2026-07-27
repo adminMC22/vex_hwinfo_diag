@@ -563,7 +563,7 @@ namespace sky::driver {
         LOG_INFO("kernel scan: " + std::to_string(module_list.size()) + " modules loaded");
 
         uint8_t page[0x1000];
-        constexpr uintptr_t STEP = 0x40000; // 256KB step
+        constexpr uintptr_t STEP = 0x10000; // 64KB step (catches any 4KB-aligned module)
         uint64_t next_progress = 0x100000000ULL;
         for (uint64_t pa = 0; pa < total_phys; pa += STEP) {
             if (pa >= next_progress) {
@@ -578,19 +578,35 @@ namespace sky::driver {
             if (pe_off > 0x1000 - 4) continue;
             if (page[pe_off] != 'P' || page[pe_off + 1] != 'E') continue;
 
-            // Read ImageBase (8 bytes at PE+24+24=PE+0x30 for PE32+)
-            uintptr_t image_base = 0;
-            memcpy(&image_base, page + pe_off + 0x30, sizeof(uintptr_t));
+            // Read SizeOfImage (4 bytes at PE+24+56=PE+0x50 for PE32+)
+            uint32_t size_of_image = 0;
+            memcpy(&size_of_image, page + pe_off + 0x50, sizeof(size_of_image));
 
-            // Check if this PE's ImageBase matches any known kernel module
+            // Check if this PE's size matches any known kernel module
             for (const auto& mod : module_list) {
-                if (image_base == mod.image_base) {
+                if (size_of_image == mod.image_size) {
+                    // Found a size match — read ImageBase from this PE to verify
+                    uintptr_t pe_image_base = 0;
+                    memcpy(&pe_image_base, page + pe_off + 0x30, sizeof(uintptr_t));
+                    // The PE header's ImageBase is the STATIC build-time base
+                    // KASLR loads at a different virtual address. The module
+                    // list gives us the KASLR-randomized address. The difference
+                    // between the module's actual virtual base and this PE's
+                    // static ImageBase gives us the KASLR displacement.
+                    // This displacement must be the same for all kernel modules
+                    // in the same PML4 region.
+                    int64_t kaslr_disp = (int64_t)mod.image_base - (int64_t)pe_image_base;
+
                     LOG_INFO("kernel scan: found " + mod.name +
                         " at phys=0x" + std::format("{:x}", pa) +
-                        " (matches virt=0x" + std::format("{:x}", mod.image_base) + ")");
+                        " (size=0x" + std::format("{:x}", size_of_image) +
+                        ", virt=0x" + std::format("{:x}", mod.image_base) +
+                        ", KASLR disp=0x" + std::format("{:x}", kaslr_disp) + ")");
 
-                    // Calculate offset: kernel_offset = phys - virt
-                    // Apply to ntoskrnl: s_kernel_pbase = ntoskrnl_vbase + kernel_offset
+                    // Calculate kernel offset: offset = phys - virt_actual
+                    // virt_actual = static_image_base + kaslr_disp
+                    // So: offset = phys - (static_image_base + kaslr_disp)
+                    //                  = phys - mod.image_base
                     int64_t offset = (int64_t)pa - (int64_t)mod.image_base;
                     s_kernel_pbase = (uintptr_t)((int64_t)s_kernel_vbase + offset);
                     LOG_INFO("kernel scan: derived ntoskrnl phys=0x" +
