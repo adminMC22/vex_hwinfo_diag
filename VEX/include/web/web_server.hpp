@@ -63,7 +63,7 @@ namespace sky::web {
         void http_thread();
         void ws_thread(SOCKET client);
         void handle_http_request(SOCKET client, const std::string& request);
-        void handle_websocket(SOCKET client);
+        void handle_websocket(SOCKET client, const std::string& request);
         void broadcast_ws(const std::string& msg);
 
         SOCKET m_listen_socket = INVALID_SOCKET;

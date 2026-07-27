@@ -21,6 +21,15 @@ namespace sky::game::engine {
         if (!set_target_process(xorstr_(L"VALORANT-Win64-Shipping.exe"))) {
             return false;
         }
+
+        // Initialize VGK system (needed for start() to not bail out)
+        m_vgk = std::make_shared<VGK>();
+        if (!m_vgk) {
+            LOG_ERROR("Failed to create VGK system");
+            return false;
+        }
+
+        LOG_INFO("Game engine initialized");
         return true;
     }
 

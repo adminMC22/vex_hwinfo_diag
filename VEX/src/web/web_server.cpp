@@ -334,7 +334,7 @@ void WebServer::http_thread() {
         // Check if WebSocket upgrade
         if (request.find("Upgrade: websocket") != std::string::npos ||
             request.find("Upgrade: WebSocket") != std::string::npos) {
-            handle_websocket(client);
+            handle_websocket(client, request);  // Pass the already-read request
         } else {
             handle_http_request(client, request);
         }
@@ -353,19 +353,13 @@ void WebServer::handle_http_request(SOCKET client, const std::string& request) {
     closesocket(client);
 }
 
-void WebServer::handle_websocket(SOCKET client) {
-    // Parse Sec-WebSocket-Key
-    std::string req_str;
-    char buf[4096] = {};
-    int received = recv(client, buf, sizeof(buf) - 1, 0);
-    if (received <= 0) { closesocket(client); return; }
-    req_str = std::string(buf, received);
-
-    size_t key_pos = req_str.find("Sec-WebSocket-Key: ");
+void WebServer::handle_websocket(SOCKET client, const std::string& request) {
+    // Parse Sec-WebSocket-Key from the ALREADY-READ request
+    size_t key_pos = request.find("Sec-WebSocket-Key: ");
     if (key_pos == std::string::npos) { closesocket(client); return; }
     key_pos += 19;
-    size_t key_end = req_str.find("\r\n", key_pos);
-    std::string ws_key = req_str.substr(key_pos, key_end - key_pos);
+    size_t key_end = request.find("\r\n", key_pos);
+    std::string ws_key = request.substr(key_pos, key_end - key_pos);
     std::string accept_key = ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     uint8_t sha1_hash[20];

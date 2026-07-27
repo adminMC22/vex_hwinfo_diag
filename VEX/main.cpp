@@ -50,7 +50,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Step 4: Initialize game engine
         auto game_engine = sky::game::engine::m_game_engine;
         if (!game_engine->initialize()) {
-            LOG_ERROR("Failed to initialize game engine");
+            LOG_WARNING("Game engine initialize failed — is Valorant running?");
+            LOG_INFO("Continuing anyway — panel will show when game starts");
         } else {
             game_engine->start();
             LOG_INFO("Game engine started");
