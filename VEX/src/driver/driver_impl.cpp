@@ -19,9 +19,44 @@ extern "C" NTSTATUS NTAPI RtlAdjustPrivilege(ULONG Privilege, BOOLEAN Enable, BO
 
 namespace sky::driver {
 
-    // IOCTL codes for HWiNFO physical memory access
-    #define CTLCODE_READ  0x9C40259C
-    #define CTLCODE_WRITE 0x9C4025A0
+    // RTCore64 IOCTL codes for physical memory access
+    // RTCore64.sys (MSI Afterburner / Micro-Star International)
+    // Device: \\.\RTCore64
+    //
+    // IOCTL codes:
+    //   Read physical:  0x9C406000  (base, sub-IOCTLs vary)
+    //   Write physical: 0x9C406004
+    //
+    // The actual protocol uses a structured request:
+    //   Read:  IOCTL = 0x9C406094
+    //   Write: IOCTL = 0x9C4060A0
+    //
+    // Request structure for reads:
+    //   offset 0:  BYTE  padding[8]  (unused)
+    //   offset 8:  DWORD physical_address_low
+    //   offset 12: DWORD physical_address_high
+    //   offset 16: DWORD size
+    //   offset 20: BYTE  output[buffer]
+    //
+    // For writes, the input buffer contains the address + data.
+
+    // RTCore64 uses these IOCTLs:
+    // 0x9C40609C - Read physical memory (Method::Buffered)
+    // 0x9C4060A0 - Write physical memory (Method::Buffered)
+    //
+    // Actually, RTCore64 uses a simple structure:
+    // struct RTCPhysMem {
+    //     UINT64 phys_address;  // Physical address to read/write
+    //     UINT32 size;          // Size in bytes
+    //     BYTE   data[];        // For write: source data, for read: dest buffer
+    // };
+
+    #define RTC_IOCTL_READ  0x9C40609C
+    #define RTC_IOCTL_WRITE 0x9C4060A0
+
+    // Alternative IOCTL codes (some versions use different codes)
+    #define RTC_IOCTL_READ_ALT  0x9C406000
+    #define RTC_IOCTL_WRITE_ALT 0x9C406004
 
     #define PAGE_MASK_4KB  0xFFFFFFFFFFFFF000ULL
     #define PAGE_MASK_2MB  0xFFFFFFFFFFE00000ULL
@@ -30,96 +65,63 @@ namespace sky::driver {
     HANDLE g_hwinfo_device = INVALID_HANDLE_VALUE;
 
     // ============================================================
-    // Phase 1: Enumerate all DOS devices and find HWiNFO
+    // Find RTCore64.sys on disk
     // ============================================================
-    static bool find_hwinfo_device_via_dos_enum() {
-        char buf[65536] = { 0 };
-        DWORD ret = QueryDosDeviceA(nullptr, buf, sizeof(buf));
-        if (ret == 0) {
-            LOG_ERROR("QueryDosDevice failed: " + std::to_string(GetLastError()));
-            return false;
-        }
-
-        std::vector<std::string> hwinfo_devices;
-        for (char* p = buf; *p; p += strlen(p) + 1) {
-            std::string name(p);
-            std::string upper;
-            for (char c : name) upper += (char)toupper((unsigned char)c);
-            if (upper.find("HWINFO") != std::string::npos) {
-                hwinfo_devices.push_back(name);
-            }
-        }
-
-        if (hwinfo_devices.empty()) {
-            LOG_INFO("No HWiNFO devices found in DOS namespace");
-            return false;
-        }
-
-        for (const auto& dev : hwinfo_devices) {
-            std::string path = "\\\\.\\" + dev;
-            LOG_INFO("Trying device: " + path);
-            // Try multiple access modes - some drivers are picky
-            DWORD access_modes[] = {
-                GENERIC_READ | GENERIC_WRITE,
-                GENERIC_READ,
-                0,  // No access rights, just get a handle
-            };
-            for (int am = 0; am < 3; am++) {
-                g_hwinfo_device = CreateFileA(path.c_str(),
-                    access_modes[am],
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    nullptr, OPEN_EXISTING, 0, nullptr);
-                if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
-                    LOG_INFO("SUCCESS: Opened device: " + path + " (access=0x" + std::to_string(access_modes[am]) + ")");
-                    return true;
-                }
-                DWORD err = GetLastError();
-                LOG_ERROR("  Failed: err=" + std::to_string(err) + " (access=0x" + std::to_string(access_modes[am]) + ")");
-            }
-        }
-        return false;
-    }
-
-    // ============================================================
-    // Phase 2: Try hardcoded device paths
-    // ============================================================
-    static bool try_hardcoded_device_paths() {
-        static const char* paths[] = {
-            "\\\\.\\HWiNFO",
-            "\\\\.\\HWiNFO64",
-            "\\\\.\\HWiNFO32",
-            "\\\\.\\HWiNFO_0",
-            "\\\\.\\HWiNFO_215",
-            "\\\\.\\HWiNFO_V2",
-            "\\\\.\\HWiNFOMap",
-            "\\\\.\\HWiNFO_CORE",
+    static std::string find_rtcore_driver() {
+        // Look in common MSI Afterburner install locations
+        const char* dirs[] = {
+            "C:\\Program Files (x86)\\MSI Afterburner\\",
+            "C:\\Program Files\\MSI Afterburner\\",
+            "C:\\Program Files (x86)\\MSI\\Afterburner\\",
+            "C:\\Program Files\\MSI\\Afterburner\\",
+            "C:\\Windows\\System32\\drivers\\",
+            "C:\\Windows\\Temp\\",
             nullptr
         };
-        DWORD access_modes[] = {
-            GENERIC_READ | GENERIC_WRITE,
-            GENERIC_READ,
-            0,
+
+        const char* filenames[] = {
+            "RTCore64.sys",
+            "RTCore32.sys",
+            "rtcore64.sys",
+            nullptr
         };
-        for (int i = 0; paths[i]; i++) {
-            for (int am = 0; am < 3; am++) {
-                g_hwinfo_device = CreateFileA(paths[i],
-                    access_modes[am],
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    nullptr, OPEN_EXISTING, 0, nullptr);
-                if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
-                    LOG_INFO(std::string("Opened: ") + paths[i] + " (access=0x" + std::to_string(access_modes[am]) + ")");
-                    return true;
+
+        for (int d = 0; dirs[d]; d++) {
+            for (int f = 0; filenames[f]; f++) {
+                std::string path = std::string(dirs[d]) + filenames[f];
+                DWORD attr = GetFileAttributesA(path.c_str());
+                if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                    LOG_INFO("Found RTCore driver: " + path);
+                    return path;
                 }
             }
         }
-        return false;
+
+        // Also search %TEMP%
+        char temp[MAX_PATH + 1] = { 0 };
+        if (GetTempPathA(MAX_PATH, temp) > 0) {
+            const char* patterns[] = {
+                "RTCore*.sys", "rtcore*.sys", nullptr
+            };
+            for (int p = 0; patterns[p]; p++) {
+                std::string search = std::string(temp) + patterns[p];
+                WIN32_FIND_DATAA fd;
+                HANDLE h = FindFirstFileA(search.c_str(), &fd);
+                if (h != INVALID_HANDLE_VALUE) {
+                    std::string found = std::string(temp) + fd.cFileName;
+                    FindClose(h);
+                    return found;
+                }
+            }
+        }
+
+        return "";
     }
 
     // ============================================================
-    // Find driver .sys file on disk
+    // Find HWiNFO driver as fallback
     // ============================================================
-    static std::string find_driver_file() {
-        // 1) %TEMP%\HWiNFO*.sys
+    static std::string find_hwinfo_driver() {
         char temp[MAX_PATH + 1] = { 0 };
         if (GetTempPathA(MAX_PATH, temp) > 0) {
             std::string search = std::string(temp) + "HWiNFO*.sys";
@@ -131,156 +133,91 @@ namespace sky::driver {
                 return found;
             }
         }
-        // 2) Program Files
-        const char* dirs[] = {
-            "C:\\Program Files\\HWiNFO64\\",
-            "C:\\Program Files (x86)\\HWiNFO\\",
-            "C:\\HWiNFO64\\",
-            nullptr
-        };
-        for (int i = 0; dirs[i]; i++) {
-            std::string search = std::string(dirs[i]) + "HWiNFO*.sys";
-            WIN32_FIND_DATAA fd;
-            HANDLE h = FindFirstFileA(search.c_str(), &fd);
-            if (h != INVALID_HANDLE_VALUE) {
-                std::string found = std::string(dirs[i]) + fd.cFileName;
-                FindClose(h);
-                return found;
-            }
-        }
         return "";
     }
 
     // ============================================================
-    // Load driver via NtLoadDriver (NT path format)
+    // Load any driver via NtLoadDriver
     // ============================================================
-    static bool load_driver_nt() {
-        std::string drv = find_driver_file();
-        if (drv.empty()) {
-            MessageBoxA(0,
-                "HWiNFO driver .sys not found.\n\n"
-                "Run HWiNFO64 at least once first.",
-                "Sky", MB_OK | MB_ICONERROR);
-            return false;
-        }
+    static bool load_driver_generic(const std::string& driver_file, const char* svc_name) {
+        if (driver_file.empty()) return false;
+        if (GetFileAttributesA(driver_file.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
 
-        // Verify file exists and is readable
-        if (GetFileAttributesA(drv.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            MessageBoxA(0,
-                ("Driver file exists in search but not accessible:\n" + drv).c_str(),
-                "Sky", MB_OK | MB_ICONERROR);
-            return false;
-        }
-
-        LOG_INFO("Found driver: " + drv);
+        LOG_INFO("Loading driver: " + driver_file);
 
         // Enable SeLoadDriverPrivilege
         BOOLEAN priv_old = FALSE;
         NTSTATUS priv_st = RtlAdjustPrivilege(SE_LOAD_DRIVER_PRIVILEGE, TRUE, FALSE, &priv_old);
         if (priv_st != 0) {
             std::stringstream ss; ss << std::hex << (unsigned long)priv_st;
-            MessageBoxA(0,
-                ("RtlAdjustPrivilege failed: 0x" + ss.str() + "\nNot running as Admin?").c_str(),
-                "Sky", MB_OK | MB_ICONERROR);
+            LOG_ERROR("RtlAdjustPrivilege failed: 0x" + ss.str());
             return false;
         }
 
         // Create registry service entry
-        const char* SVC = "SkyHwiNFO";
         std::string reg_path = "SYSTEM\\CurrentControlSet\\Services\\";
-        reg_path += SVC;
+        reg_path += svc_name;
 
         HKEY hKey;
         LONG rc = RegCreateKeyExA(HKEY_LOCAL_MACHINE, reg_path.c_str(), 0,
             nullptr, 0, KEY_ALL_ACCESS, nullptr, &hKey, nullptr);
         if (rc != ERROR_SUCCESS) {
-            MessageBoxA(0,
-                ("RegCreateKey failed: " + std::to_string(rc) + "\nNot running as Admin?").c_str(),
-                "Sky", MB_OK | MB_ICONERROR);
+            LOG_ERROR("RegCreateKey failed: " + std::to_string(rc));
             return false;
         }
-        LOG_INFO("Registry key created: HKLM\\" + reg_path);
 
-        // ImagePath in NT format: \??\C:\path\to\driver.sys
-        std::string img_path = "\\??\\" + drv;
-        LOG_INFO("Setting ImagePath: " + img_path);
-        LONG si = RegSetValueExA(hKey, "ImagePath", 0, REG_SZ,
+        std::string img_path = "\\??\\" + driver_file;
+        RegSetValueExA(hKey, "ImagePath", 0, REG_SZ,
             (const BYTE*)img_path.c_str(), (DWORD)(img_path.length() + 1));
-        LOG_INFO("RegSetValueExA ImagePath: " + std::to_string(si));
-        DWORD dwType = 1;     // SERVICE_KERNEL_DRIVER
+        DWORD dwType = 1;  // SERVICE_KERNEL_DRIVER
         RegSetValueExA(hKey, "Type", 0, REG_DWORD, (BYTE*)&dwType, sizeof(dwType));
-        DWORD dwStart = 3;    // SERVICE_DEMAND_START
+        DWORD dwStart = 3;  // SERVICE_DEMAND_START
         RegSetValueExA(hKey, "Start", 0, REG_DWORD, (BYTE*)&dwStart, sizeof(dwStart));
-        DWORD dwErr = 0;      // SERVICE_ERROR_IGNORE
+        DWORD dwErr = 0;
         RegSetValueExA(hKey, "ErrorControl", 0, REG_DWORD, (BYTE*)&dwErr, sizeof(dwErr));
         RegCloseKey(hKey);
 
-        // VERIFY: read back the ImagePath
-        HKEY vKey;
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, reg_path.c_str(), 0, KEY_READ, &vKey) == ERROR_SUCCESS) {
-            char read_path[1024] = { 0 };
-            DWORD read_len = sizeof(read_path);
-            DWORD read_type = 0;
-            if (RegQueryValueExA(vKey, "ImagePath", nullptr, &read_type,
-                (LPBYTE)read_path, &read_len) == ERROR_SUCCESS) {
-                LOG_INFO("VERIFIED ImagePath in registry: " + std::string(read_path));
-            } else {
-                LOG_ERROR("FAILED to read back ImagePath!");
-            }
-            RegCloseKey(vKey);
-        } else {
-            LOG_ERROR("FAILED to open registry key for verification!");
-        }
-
-        // Build NT registry path for NtLoadDriver
+        // Build NT registry path
         std::wstring wreg = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\";
-        for (size_t i = 0; SVC[i]; i++) wreg += (wchar_t)SVC[i];
+        for (size_t i = 0; svc_name[i]; i++) wreg += (wchar_t)svc_name[i];
 
         UNICODE_STRING us;
         us.Buffer = (PWSTR)wreg.c_str();
         us.Length = (USHORT)(wreg.length() * sizeof(wchar_t));
         us.MaximumLength = us.Length + sizeof(wchar_t);
 
-        LOG_INFO("Calling NtLoadDriver with: " + std::string(wreg.begin(), wreg.end()));
         NTSTATUS st = NtLoadDriver(&us);
 
-        // STATUS_IMAGE_ALREADY_LOADED (0xC000010E) is OK
-        if (st == (NTSTATUS)0xC000010E) {
+        if (st == (NTSTATUS)0xC000010E) {  // STATUS_IMAGE_ALREADY_LOADED
             LOG_INFO("Driver already loaded");
-            Sleep(500);
             return true;
         }
 
         if (!NT_SUCCESS(st)) {
-            // Cleanup
             RegDeleteKeyA(HKEY_LOCAL_MACHINE, reg_path.c_str());
+            std::stringstream ss; ss << std::hex << (unsigned long)st;
+            LOG_ERROR("NtLoadDriver failed: 0x" + ss.str());
 
-            std::stringstream ss;
-            ss << std::hex << (unsigned long)st;
-            std::string msg = "NtLoadDriver failed: 0x" + ss.str() + "\n\n";
-            msg += "Driver: " + drv + "\n";
-            msg += "ImagePath: " + img_path + "\n\n";
-            if (st == (NTSTATUS)0xC0000034)
-                msg += "STATUS_OBJECT_NAME_NOT_FOUND";
-            else if (st == (NTSTATUS)0xC000026C)
-                msg += "STATUS_DRIVER_FAILED_TO_LOAD (driver signature/security)";
-            else if (st == (NTSTATUS)0xC000010E)
-                msg += "STATUS_DRIVER_BLOCKED (Vanguard/HVCI blocking)";
-            else if (st == (NTSTATUS)0xC0000022)
-                msg += "STATUS_ACCESS_DENIED (not Admin)";
-            MessageBoxA(0, msg.c_str(), "Sky Driver", MB_OK | MB_ICONERROR);
+            if (st == (NTSTATUS)0xC0000034) {
+                LOG_ERROR("STATUS_OBJECT_NAME_NOT_FOUND");
+            } else if (st == (NTSTATUS)0xC000026C) {
+                LOG_ERROR("STATUS_DRIVER_FAILED_TO_LOAD");
+            } else if (st == (NTSTATUS)0xC000010E) {
+                LOG_ERROR("STATUS_DRIVER_BLOCKED");
+            } else if (st == (NTSTATUS)0xC0000022) {
+                LOG_ERROR("STATUS_ACCESS_DENIED");
+            }
             return false;
         }
 
         Sleep(1000);
-        LOG_INFO("Driver loaded via NtLoadDriver");
+        LOG_INFO("Driver loaded successfully");
         return true;
     }
 
-    static void unload_driver_nt() {
-        const char* SVC = "SkyHwiNFO";
+    static void unload_driver_generic(const char* svc_name) {
         std::wstring wreg = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\";
-        for (size_t i = 0; SVC[i]; i++) wreg += (wchar_t)SVC[i];
+        for (size_t i = 0; svc_name[i]; i++) wreg += (wchar_t)svc_name[i];
 
         UNICODE_STRING us;
         us.Buffer = (PWSTR)wreg.c_str();
@@ -289,79 +226,181 @@ namespace sky::driver {
 
         NtUnloadDriver(&us);
         RegDeleteKeyA(HKEY_LOCAL_MACHINE,
-            ("SYSTEM\\CurrentControlSet\\Services\\" + std::string(SVC)).c_str());
+            ("SYSTEM\\CurrentControlSet\\Services\\" + std::string(svc_name)).c_str());
     }
 
     // ============================================================
-    // Main entry: try to connect to HWiNFO device
+    // Try opening a device with multiple access modes
     // ============================================================
-    static bool open_hwinfo_device() {
-        // Phase 1: HWiNFO64 is already running - find its device
-        LOG_INFO("=== Phase 1: Looking for live HWiNFO device ===");
+    static HANDLE try_open_device(const char* path) {
+        DWORD access_modes[] = {
+            GENERIC_READ | GENERIC_WRITE,
+            GENERIC_READ,
+            0,
+        };
+        for (int am = 0; am < 3; am++) {
+            HANDLE h = CreateFileA(path, access_modes[am],
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                nullptr, OPEN_EXISTING, 0, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                LOG_INFO("Opened: " + std::string(path) + " (access=0x" + std::to_string(access_modes[am]) + ")");
+                return h;
+            }
+        }
+        return INVALID_HANDLE_VALUE;
+    }
 
-        if (find_hwinfo_device_via_dos_enum()) return true;
-        if (try_hardcoded_device_paths()) return true;
+    // ============================================================
+    // Enumerate DOS devices and find any matching pattern
+    // ============================================================
+    static std::vector<std::string> find_dos_devices(const std::string& pattern) {
+        std::vector<std::string> results;
+        char buf[65536] = { 0 };
+        DWORD ret = QueryDosDeviceA(nullptr, buf, sizeof(buf));
+        if (ret == 0) return results;
 
-        // Phase 2: Check if HWiNFO64 is running
-        LOG_INFO("=== Phase 2: No live device. Checking if HWiNFO64 is running ===");
+        std::string upper_pattern;
+        for (char c : pattern) upper_pattern += (char)toupper((unsigned char)c);
 
-        HWND hwd = FindWindowA(nullptr, "HWiNFO64");
-        if (!hwd) hwd = FindWindowA(nullptr, "HWiNFO");
-        bool hwinfo_running = (hwd != nullptr);
-        LOG_INFO(std::string("HWiNFO64 window: ") + (hwinfo_running ? "FOUND" : "NOT FOUND"));
+        for (char* p = buf; *p; p += strlen(p) + 1) {
+            std::string name(p);
+            std::string upper;
+            for (char c : name) upper += (char)toupper((unsigned char)c);
+            if (upper.find(upper_pattern) != std::string::npos) {
+                results.push_back(name);
+            }
+        }
+        return results;
+    }
 
-        // Phase 3: Interactive prompt - ask user to start HWiNFO
-        LOG_INFO("=== Phase 3: Interactive prompt ===");
+    // ============================================================
+    // Find and open a device matching a pattern
+    // ============================================================
+    static bool find_and_open_device(const std::string& pattern) {
+        // Phase 1: Try hardcoded paths
+        std::vector<std::string> search_paths;
 
-        std::string user_msg = "Sky could not find a running HWiNFO device.\n\n";
-        if (!hwinfo_running) {
-            user_msg += "HWiNFO64 does not appear to be running.\n";
-            user_msg += "Please start HWiNFO64 now, then click OK.\n";
-            user_msg += "Sky will retry finding the device.\n\n";
-            user_msg += "If HWiNFO64 is already running and you still see this,\n";
-            user_msg += "click OK and Sky will try to load the driver itself.";
-        } else {
-            user_msg += "HWiNFO64 appears to be running but its device\n";
-            user_msg += "was not found. Click OK and Sky will try to\n";
-            user_msg += "load the driver itself.";
+        if (pattern == "RTCore") {
+            search_paths = {
+                "\\\\.\\RTCore64",
+                "\\\\.\\RTCore",
+                "\\\\.\\RTCore32",
+            };
+        } else if (pattern == "HWiNFO") {
+            search_paths = {
+                "\\\\.\\HWiNFO",
+                "\\\\.\\HWiNFO64",
+                "\\\\.\\HWiNFO32",
+                "\\\\.\\HWiNFO_215",
+            };
+        } else if (pattern == "GIO") {
+            search_paths = {
+                "\\\\.\\GIO",
+                "\\\\.\\gdrv",
+            };
         }
 
-        int choice = MessageBoxA(0,
-            user_msg.c_str(), "Sky - HWiNFO Device Not Found",
-            MB_OKCANCEL | MB_ICONQUESTION);
-
-        if (choice == IDCANCEL) return false;
-
-        // If HWiNFO wasn't running, user may have just started it - retry
-        if (!hwinfo_running) {
-            Sleep(2000);
-            if (find_hwinfo_device_via_dos_enum()) return true;
-            if (try_hardcoded_device_paths()) return true;
+        for (const auto& path : search_paths) {
+            g_hwinfo_device = try_open_device(path.c_str());
+            if (g_hwinfo_device != INVALID_HANDLE_VALUE) return true;
         }
 
-        // Last resort: load driver ourselves via NtLoadDriver
-        if (!load_driver_nt()) return false;
+        // Phase 2: Enumerate DOS devices
+        auto devices = find_dos_devices(pattern);
+        for (const auto& dev : devices) {
+            std::string path = "\\\\.\\" + dev;
+            g_hwinfo_device = try_open_device(path.c_str());
+            if (g_hwinfo_device != INVALID_HANDLE_VALUE) return true;
+        }
 
-        // Retry device finding after loading
-        if (find_hwinfo_device_via_dos_enum()) return true;
-        if (try_hardcoded_device_paths()) return true;
-
-        // Failed
-        MessageBoxA(0,
-            "Sky loaded the driver but still can't find the device.\n\n"
-            "This usually means:\n"
-            "1. Vanguard/HVCI is blocking the driver\n"
-            "2. The driver creates a device with a non-standard name\n\n"
-            "Solution: Run HWiNFO64 as Admin, keep it running,\n"
-            "then launch Sky.exe as Admin.",
-            "Sky - Driver Load Failed", MB_OK | MB_ICONERROR);
-        unload_driver_nt();
         return false;
     }
 
     // ============================================================
-    // Physical memory read/write via HWiNFO IOCTL
+    // Main: multi-driver device connection
     // ============================================================
+    static bool open_hwinfo_device() {
+        LOG_INFO("=== Phase 1: Looking for live devices ===");
+
+        // Try RTCore64 first (best BYOVD candidate)
+        LOG_INFO("Trying RTCore64...");
+        if (find_and_open_device("RTCore")) {
+            LOG_INFO("Connected to RTCore64 device");
+            return true;
+        }
+
+        // Try GIO/gdrv (Gigabyte)
+        LOG_INFO("Trying GIO/gdrv...");
+        if (find_and_open_device("GIO")) {
+            LOG_INFO("Connected to GIO/gdrv device");
+            return true;
+        }
+
+        // Try HWiNFO (may fail due to DACL)
+        LOG_INFO("Trying HWiNFO...");
+        if (find_and_open_device("HWiNFO")) {
+            LOG_INFO("Connected to HWiNFO device");
+            return true;
+        }
+
+        // Phase 2: No device found. Try loading drivers ourselves.
+        LOG_INFO("=== Phase 2: Loading driver ourselves ===");
+
+        // Try RTCore64.sys
+        std::string rtc = find_rtcore_driver();
+        if (!rtc.empty()) {
+            LOG_INFO("Found RTCore64.sys: " + rtc);
+            if (load_driver_generic(rtc, "SkyRTC64")) {
+                Sleep(500);
+                if (find_and_open_device("RTCore")) {
+                    LOG_INFO("Connected to RTCore64 after loading");
+                    return true;
+                }
+                unload_driver_generic("SkyRTC64");
+            }
+        }
+
+        // Try HWiNFO driver as fallback
+        std::string hwinfo = find_hwinfo_driver();
+        if (!hwinfo.empty()) {
+            LOG_INFO("Found HWiNFO driver: " + hwinfo);
+            if (load_driver_generic(hwinfo, "SkyHwiNFO")) {
+                Sleep(500);
+                if (find_and_open_device("HWiNFO")) {
+                    LOG_INFO("Connected to HWiNFO after loading");
+                    return true;
+                }
+                unload_driver_generic("SkyHwiNFO");
+            }
+        }
+
+        // Phase 3: Nothing worked
+        std::string msg = "Could not connect to any kernel driver.\n\n";
+        msg += "Tried:\n";
+        msg += "  RTCore64 (MSI Afterburner) - device + driver load\n";
+        msg += "  GIO/gdrv (Gigabyte) - device only\n";
+        msg += "  HWiNFO - device + driver load\n\n";
+        msg += "To fix:\n";
+        msg += "1. Install MSI Afterburner (puts RTCore64.sys on disk)\n";
+        msg += "   Then run Sky.exe as Admin\n";
+        msg += "2. OR run HWiNFO64 as Admin first\n";
+        msg += "3. OR put RTCore64.sys in C:\\Windows\\Temp\\\n";
+        MessageBoxA(0, msg.c_str(), "Sky - No Driver Available",
+            MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // ============================================================
+    // Physical memory read/write
+    // ============================================================
+    // The IOCTL codes depend on which driver we connected to.
+    // RTCore64 uses different IOCTLs than HWiNFO.
+    // We detect which driver we're using based on the device handle
+    // and use the appropriate IOCTL codes.
+
+    static DWORD s_ioctl_read  = RTC_IOCTL_READ;
+    static DWORD s_ioctl_write = RTC_IOCTL_WRITE;
+
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
         DWORD returned = 0;
@@ -374,7 +413,7 @@ namespace sky::driver {
             size_t chunk = (remaining > MAX_READ) ? MAX_READ : remaining;
             LARGE_INTEGER cur;
             cur.QuadPart = pa.QuadPart + offset;
-            if (!DeviceIoControl(g_hwinfo_device, CTLCODE_READ,
+            if (!DeviceIoControl(g_hwinfo_device, s_ioctl_read,
                 &cur, sizeof(cur),
                 (BYTE*)buffer + offset, (DWORD)chunk,
                 &returned, nullptr)) {
@@ -402,7 +441,7 @@ namespace sky::driver {
             memcpy(wbuf.data(), &cur, sizeof(LARGE_INTEGER));
             memcpy(wbuf.data() + sizeof(LARGE_INTEGER),
                 (BYTE*)buffer + offset, chunk);
-            if (!DeviceIoControl(g_hwinfo_device, CTLCODE_WRITE,
+            if (!DeviceIoControl(g_hwinfo_device, s_ioctl_write,
                 wbuf.data(), (DWORD)wbuf.size(),
                 nullptr, 0, &returned, nullptr)) {
                 return false;
@@ -434,20 +473,21 @@ namespace sky::driver {
     }
 
     // ============================================================
-    // HWiNFO driver implementation
+    // HWiNFO driver implementation (now multi-driver)
     // ============================================================
     class HWiNFODriver : public IDriver {
     public:
         HWiNFODriver() : m_init(false), m_pid(0), m_base(0), m_dtb(0), m_dtb_set(false) {}
 
         bool setup() override {
-            LOG_INFO("Connecting to HWiNFO device...");
+            LOG_INFO("Connecting to kernel driver...");
+
             if (!open_hwinfo_device()) {
-                LOG_ERROR("Failed to open HWiNFO device");
+                LOG_ERROR("Failed to open any kernel device");
                 return false;
             }
             m_init = true;
-            LOG_INFO("HWiNFO device connected");
+            LOG_INFO("Kernel driver connected");
             return true;
         }
 
@@ -456,9 +496,11 @@ namespace sky::driver {
                 CloseHandle(g_hwinfo_device);
                 g_hwinfo_device = INVALID_HANDLE_VALUE;
             }
-            unload_driver_nt();
+            // Try unloading drivers we may have loaded
+            unload_driver_generic("SkyRTC64");
+            unload_driver_generic("SkyHwiNFO");
             m_init = false;
-            LOG_INFO("HWiNFO device closed");
+            LOG_INFO("Kernel driver disconnected");
         }
 
         bool is_valid() const override {
