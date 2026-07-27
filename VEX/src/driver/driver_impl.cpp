@@ -530,10 +530,14 @@ namespace sky::driver {
         if (s_kernel_vbase == 0) return false;
 
         // Scan physical memory for the PE signature (MZ)
-        // Kernel is typically in the first 128MB of physical memory
-        constexpr uintptr_t MAX_PHYS = 0x8000000; // 128MB
+        // Kernel is typically in the first 1GB, but can be higher on systems with >16GB RAM
         uint8_t page[0x1000];
-        for (uintptr_t pa = 0; pa < MAX_PHYS; pa += 0x1000) {
+        uintptr_t pa;
+        constexpr uintptr_t STEP = 0x100000; // Scan every 1MB (check first page of each 1MB block)
+        // ntoskrnl is loaded at a 1MB-aligned or 2MB-aligned boundary, so scanning
+        // every 1MB saves ~256x the time vs 4KB granularity
+        for (pa = 0; pa < 0x100000000ULL; pa += STEP) { // scan up to 4GB
+            // Read the first page of this block
             if (!read_physical(pa, page, 0x1000)) continue;
             if (page[0] != 'M' || page[1] != 'Z') continue;
 
@@ -542,8 +546,43 @@ namespace sky::driver {
             if (pe_off > 0x1000 - 4) continue;
             if (page[pe_off] != 'P' || page[pe_off + 1] != 'E') continue;
 
+            // Read SizeOfImage from PE header to verify it's ntoskrnl
+            // SizeOfImage is at PE_offset + 0x50 (PE signature (4) + COFF header (20) = 24, then +0x38 from OptionalHeader start = 0x50)
+            uint32_t size_of_image;
+            memcpy(&size_of_image, page + pe_off + 0x50, sizeof(size_of_image));
+
+            // ntoskrnl.exe is typically 8-15MB. Check against known size from module list.
+            // Accept any kernel-sized image (4MB-64MB)
+            if (size_of_image < 0x400000 || size_of_image > 0x4000000) {
+                continue; // Not kernel-sized, skip
+            }
+
+            LOG_INFO("Found kernel PE candidate: phys=0x" + std::format("{:x}", pa) +
+                     " size=0x" + std::format("{:x}", size_of_image));
             s_kernel_pbase = pa;
             break;
+        }
+
+        if (s_kernel_pbase == 0) {
+            // Fallback: 4KB granularity scan of first 512MB (slower but catches edge cases)
+            LOG_INFO("kernel scan: trying fine-grained scan 0-512MB...");
+            for (pa = 0x200000; pa < 0x20000000ULL; pa += 0x1000) {
+                if (!read_physical(pa, page, 0x1000)) continue;
+                if (page[0] != 'M' || page[1] != 'Z') continue;
+
+                uint32_t pe_off;
+                memcpy(&pe_off, page + 0x3C, sizeof(pe_off));
+                if (pe_off > 0x1000 - 4) continue;
+                if (page[pe_off] != 'P' || page[pe_off + 1] != 'E') continue;
+
+                uint32_t size_of_image;
+                memcpy(&size_of_image, page + pe_off + 0x50, sizeof(size_of_image));
+                if (size_of_image < 0x400000 || size_of_image > 0x4000000) continue;
+
+                LOG_INFO("Found kernel PE candidate (fine): phys=0x" + std::format("{:x}", pa));
+                s_kernel_pbase = pa;
+                break;
+            }
         }
 
         if (s_kernel_pbase == 0) {
