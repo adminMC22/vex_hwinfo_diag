@@ -209,11 +209,20 @@ namespace sky::game::engine {
         while (m_running.load()) {
             try {
                 update_world_data();
+                {
+                    auto wd = m_world_data;
+                    if (wd.is_valid) {
+                        LOG_INFO("World: is_valid=true, camera=(" +
+                            std::to_string((int)wd.camera.Location.X) + "," +
+                            std::to_string((int)wd.camera.Location.Y) + "," +
+                            std::to_string((int)wd.camera.Location.Z) + ")");
+                    }
+                }
             }
             catch (const std::exception& e) {
                 LOG_ERROR(std::format("Exception in world thread: {}", e.what()));
             }
-            Sleep(1);
+            Sleep(16);
         }
     }
 

@@ -101,10 +101,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                         auto health = actor.damage_handler.GetHealth();
                         if (health <= 0.f) continue;
 
-                        sky::web::PlayerData pd;
+                        sky::web::PlayerEntry pd;
                         pd.name = actor.name;
-                        pd.health = health;
-                        pd.visible = actor.visible;
+                        pd.health = (int)health;
 
                         // World position
                         auto pos = actor.actor.GetBoneWithRotation(actor.mesh, actor.bone_array, 0);

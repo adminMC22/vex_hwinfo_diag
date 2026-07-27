@@ -14,69 +14,48 @@
 
 namespace sky::web {
 
-    // Game data snapshot sent to web clients via WebSocket
-    struct PlayerData {
-        std::string name;
-        float health;
-        float pos_x, pos_y, pos_z;       // World position
-        float bone_x, bone_y;            // Screen-projected head position
-        float feet_x, feet_y;            // Screen-projected feet
-        bool visible;
-        bool is_enemy;
-        float distance;
-    };
+struct PlayerEntry {
+    std::string name;
+    int health = 0;
+    float distance = 0;
+    float pos_x = 0, pos_y = 0, pos_z = 0;
+    bool is_enemy = false;
+};
 
-    struct GameSnapshot {
-        float camera_x, camera_y, camera_z;
-        float camera_yaw, camera_pitch;
-        float fov;
-        int screen_width, screen_height;
-        std::vector<PlayerData> players;
-        bool InGame;
-    };
+struct GameSnapshot {
+    float camera_x = 0, camera_y = 0, camera_z = 0;
+    std::vector<PlayerEntry> players;
+    bool InGame = false;
+};
 
-    // Web server — serves the control panel page and pushes game data
-    // via WebSocket to all connected clients.
-    class WebServer {
-    public:
-        static WebServer& instance() {
-            static WebServer ws;
-            return ws;
-        }
+class WebServer {
+public:
+    WebServer() = default;
+    ~WebServer() { stop(); }
 
-        bool start(int port = 8080);
-        void stop();
+    bool start(int port);
+    void stop();
+    void update_snapshot(const GameSnapshot& snap);
+    GameSnapshot get_snapshot() const;
+    void broadcast_ws(const std::string& msg);
 
-        void update_snapshot(const GameSnapshot& snap);
-        GameSnapshot get_snapshot() const;
+    // Callbacks from web panel controls
+    std::function<void(bool)> on_esp_toggle;
+    std::function<void(bool)> on_radar_toggle;
+    std::function<void(bool)> on_aimbot_toggle;
+    std::function<void(bool)> on_triggerbot_toggle;
 
-        // Config callbacks (from web panel to game engine)
-        std::function<void(bool)> on_aimbot_toggle;
-        std::function<void(bool)> on_triggerbot_toggle;
-        std::function<void(bool)> on_esp_toggle;
-        std::function<void(bool)> on_radar_toggle;
+    std::atomic<bool> running{false};
 
-    private:
-        WebServer() = default;
-        ~WebServer() { stop(); }
+    // Shared state (public so handle_client can access)
+    std::mutex client_mutex;
+    std::vector<SOCKET> ws_clients;
+    std::mutex snapshot_mutex;
+    GameSnapshot m_snapshot;
 
-        void http_thread();
-        void ws_thread(SOCKET client);
-        void handle_http_request(SOCKET client, const std::string& request);
-        void handle_websocket(SOCKET client, const std::string& request);
-        void broadcast_ws(const std::string& msg);
-
-        SOCKET m_listen_socket = INVALID_SOCKET;
-        std::atomic<bool> m_running{ false };
-        std::thread m_accept_thread;
-
-        GameSnapshot m_snapshot;
-        mutable std::mutex m_snapshot_mutex;
-
-        std::vector<SOCKET> m_ws_clients;
-        mutable std::mutex m_clients_mutex;
-    };
-
-    inline WebServer& g_web = WebServer::instance();
+private:
+    SOCKET m_listen_socket = INVALID_SOCKET;
+    std::thread m_accept_thread;
+};
 
 } // namespace sky::web

@@ -3,89 +3,67 @@
 #include <sstream>
 #include <cstring>
 #include <algorithm>
+#include <thread>
 
+// ===============================================================
 // Minimal SHA-1 for WebSocket handshake
-// (inline implementation to avoid OpenSSL dependency)
-static void sha1(const uint8_t* data, size_t len, uint8_t out[20]) {
+// ================================================================
+static void sha1_hash(const uint8_t* input, size_t len, uint8_t output[20]) {
     uint32_t h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
-    uint32_t w[80];
-    size_t i;
-    for (i = 0; i < len; i++) {
-        ((uint8_t*)w)[i] = data[i];
+    size_t new_len = (((len + 9 + 63) / 64) * 64) - 1;
+    uint8_t* msg = new uint8_t[new_len + 1];
+    memcpy(msg, input, len);
+    msg[len] = 0x80;
+    memset(msg + len + 1, 0, new_len - len - 1);
+    msg[new_len - 3] = (uint8_t)((len * 8) >> 24);
+    msg[new_len - 4] = (uint8_t)((len * 8) >> 16);
+    msg[new_len - 5] = (uint8_t)((len * 8) >> 8);
+    msg[new_len - 6] = (uint8_t)((len * 8) >> 0);
+    for (size_t i = 0; i <= new_len; i += 64) {
+        uint32_t w[80];
+        for (int t = 0; t < 16; t++)
+            w[t] = (uint32_t)msg[i + t * 4] << 24 | (uint32_t)msg[i + t * 4 + 1] << 16 |
+                   (uint32_t)msg[i + t * 4 + 2] << 8 | msg[i + t * 4 + 3];
+        for (int t = 16; t < 80; t++)
+            w[t] = _rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1);
+        uint32_t a = h0, b = h1, c = h2, d = h3, e = h4;
+        for (int t = 0; t < 80; t++) {
+            uint32_t f = (t < 20) ? ((b & c) | (~b & d)) : (t < 40) ? (b ^ c ^ d) : (t < 60) ? ((b & c) | (b & d) | (c & d)) : (b ^ c ^ d);
+            uint32_t k = (t < 20) ? 0x5A827999 : (t < 40) ? 0x6ED9EBA1 : (t < 60) ? 0x8F1BBCDC : 0xCA62C1D6;
+            uint32_t temp = _rotl(a, 5) + f + e + k + w[t];
+            e = d; d = c; c = _rotl(b, 30); b = a; a = temp;
+        }
+        h0 += a; h1 += b; h2 += c; h3 += d; h4 += e;
     }
-    // Pad
-    ((uint8_t*)w)[len] = 0x80;
-    i = (len + 1);
-    while (i % 64 != 56) { ((uint8_t*)w)[i] = 0; i++; }
-    // Length in bits (big-endian) at offset 56-63
-    uint64_t bitlen = (uint64_t)len * 8;
-    w[14] = (uint32_t)(bitlen >> 32);
-    w[15] = (uint32_t)(bitlen);
-
-    for (int j = 16; j < 80; j++) {
-        uint32_t a = w[j-3] ^ w[j-8] ^ w[j-14] ^ w[j-16];
-        w[j] = (a << 1) | (a >> 31);
-    }
-
-    uint32_t a = h0, b = h1, c = h2, dIdx = h3, e = h4;
-    for (int j = 0; j < 80; j++) {
-        uint32_t f, k;
-        if (j < 20) { f = (b & c) | (~b & dIdx); k = 0x5A827999; }
-        else if (j < 40) { f = b ^ c ^ dIdx; k = 0x6ED9EBA1; }
-        else if (j < 60) { f = (b & c) | (b & dIdx) | (c & dIdx); k = 0x8F1BBCDC; }
-        else { f = b ^ c ^ dIdx; k = 0xCA62C1D6; }
-
-        uint32_t temp = (a << 5) | (a >> 27);
-        temp += f + e + k + w[j];
-        e = dIdx; dIdx = c; c = (b << 30) | (b >> 2); b = a; a = temp;
-    }
-    h0 += a; h1 += b; h2 += c; h3 += dIdx; h4 += e;
-
-    // Big-endian output
-    for (int j = 0; j < 4; j++) {
-        out[j]      = (h0 >> (24 - j*8)) & 0xFF;
-        out[j+4]    = (h1 >> (24 - j*8)) & 0xFF;
-        out[j+8]    = (h2 >> (24 - j*8)) & 0xFF;
-        out[j+12]   = (h3 >> (24 - j*8)) & 0xFF;
-        out[j+16]   = (h4 >> (24 - j*8)) & 0xFF;
-    }
+    delete[] msg;
+    output[0] = (uint8_t)(h0 >> 24); output[1] = (uint8_t)(h0 >> 16);
+    output[2] = (uint8_t)(h0 >> 8);  output[3] = (uint8_t)(h0);
+    output[4] = (uint8_t)(h1 >> 24); output[5] = (uint8_t)(h1 >> 16);
+    output[6] = (uint8_t)(h1 >> 8);  output[7] = (uint8_t)(h1);
+    output[8] = (uint8_t)(h2 >> 24); output[9] = (uint8_t)(h2 >> 16);
+    output[10] = (uint8_t)(h2 >> 8); output[11] = (uint8_t)(h2);
+    output[12] = (uint8_t)(h3 >> 24);output[13] = (uint8_t)(h3 >> 16);
+    output[14] = (uint8_t)(h3 >> 8); output[15] = (uint8_t)(h3);
+    output[16] = (uint8_t)(h4 >> 24);output[17] = (uint8_t)(h4 >> 16);
+    output[18] = (uint8_t)(h4 >> 8); output[19] = (uint8_t)(h4);
 }
 
-// Base64 encode (for WebSocket handshake)
-static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 static std::string base64_encode(const uint8_t* data, size_t len) {
-    std::string result;
+    static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
     for (size_t i = 0; i < len; i += 3) {
-        uint32_t n = (uint32_t)data[i] << 16;
-        if (i + 1 < len) n |= (uint32_t)data[i+1] << 8;
-        if (i + 2 < len) n |= data[i+2];
-        result += b64_table[(n >> 18) & 63];
-        result += b64_table[(n >> 12) & 63];
-        result += (i + 1 < len) ? b64_table[(n >> 6) & 63] : '=';
-        result += (i + 2 < len) ? b64_table[n & 63] : '=';
+        uint32_t triple = (uint32_t)data[i] << 16;
+        if (i + 1 < len) triple |= (uint32_t)data[i + 1] << 8;
+        if (i + 2 < len) triple |= data[i + 2];
+        out += b64[(triple >> 18) & 0x3F];
+        out += b64[(triple >> 12) & 0x3F];
+        out += (i + 1 < len) ? b64[(triple >> 6) & 0x3F] : '=';
+        out += (i + 2 < len) ? b64[triple & 0x3F] : '=';
     }
-    return result;
+    return out;
 }
 
-// WebSocket frame helpers
-static std::string ws_frame(const std::string& payload) {
-    std::string frame;
-    frame.push_back((char)0x81); // FIN + text
-    if (payload.size() < 126) {
-        frame.push_back((char)payload.size());
-    } else if (payload.size() <= 65535) {
-        frame.push_back((char)126);
-        frame.push_back((char)((payload.size() >> 8) & 0xFF));
-        frame.push_back((char)(payload.size() & 0xFF));
-    } else {
-        frame.push_back((char)127);
-        for (int i = 7; i >= 0; i--)
-            frame.push_back((char)((payload.size() >> (i*8)) & 0xFF));
-    }
-    frame += payload;
-    return frame;
-}
-
+// Unmask WebSocket frame payload
 static std::string ws_unframe(const std::string& data) {
     if (data.size() < 2) return "";
     uint8_t opcode = data[0] & 0x0F;
@@ -187,14 +165,19 @@ body{background:#0a0a0f;color:#e0e0e0;display:flex;min-height:100vh}
 <script>
 let ws;
 let connected=false;
+let reconnectTimer=null;
 function connect(){
+if(reconnectTimer)clearTimeout(reconnectTimer);
+console.log('WebSocket connecting...');
+try{
 ws=new WebSocket('ws://'+location.host+'/ws');
-ws.onopen=()=>{connected=true;document.getElementById('status').textContent='Connected';document.getElementById('status').className='status connected';};
-ws.onclose=()=>{connected=false;document.getElementById('status').textContent='Disconnected';document.getElementById('status').className='status disconnected';setTimeout(connect,1000);};
-ws.onmessage=(e)=>{update(JSON.parse(e.data));};
-ws.onerror=()=>{ws.close();};
+}catch(e){console.error('WS create error:',e);reconnectTimer=setTimeout(connect,2000);return;}
+ws.onopen=()=>{connected=true;document.getElementById('status').textContent='Connected';document.getElementById('status').className='status connected';console.log('WebSocket connected');};
+ws.onclose=()=>{connected=false;document.getElementById('status').textContent='Disconnected';document.getElementById('status').className='status disconnected';reconnectTimer=setTimeout(connect,2000);console.log('WebSocket disconnected');};
+ws.onmessage=(e)=>{try{update(JSON.parse(e.data));}catch(ex){console.error('parse error:',ex);}};
+ws.onerror=(e)=>{console.error('WebSocket error:',e);ws.close();};
 }
-connect();
+setTimeout(connect,500);
 
 function sendCmd(key,val){
 if(!ws||ws.readyState!=1)return;
@@ -209,306 +192,259 @@ document.getElementById('trigger_toggle').onchange=e=>sendCmd('trigger',e.target
 function update(data){
 document.getElementById('player_count').textContent=data.players.length;
 document.getElementById('in_game').textContent=data.InGame?'Yes':'No';
-
-// Radar
+if(data.FPS!==undefined)document.getElementById('fps').textContent=data.FPS;
 const canvas=document.getElementById('radar');
 const ctx=canvas.getContext('2d');
 ctx.clearRect(0,0,400,400);
 ctx.fillStyle='#0c0c14';
 ctx.fillRect(0,0,400,400);
-
 if(data.InGame&&data.players.length>0){
-const cx=200,cy=200;scale=1.5;
-// Draw players
+const cx=200,cy=200,scale=1.5;
 for(const p of data.players){
 const dx=p.pos_x-data.camera_x;
 const dy=p.pos_y-data.camera_y;
 const px=cx+dy*scale;
 const py=cy-dx*scale;
 if(px<0||px>400||py<0||py>400)continue;
-
 ctx.fillStyle=p.is_enemy?'#ff4444':'#44ff44';
 ctx.beginPath();
 ctx.arc(px,py,4,0,Math.PI*2);
 ctx.fill();
-
 ctx.fillStyle='#fff';
 ctx.font='10px sans-serif';
-ctx.fillText(p.name+Math.round(p.distance)+'m',px+6,py+3);
+ctx.fillText((p.name||'?')+' '+Math.round(p.distance||0)+'m',px+6,py+3);
 }
-
-// Draw self (center)
-ctx.fillStyle='#4488ff';
-ctx.beginPath();
-ctx.arc(cx,cy,5,0,Math.PI*2);
-ctx.fill();
 }
-
-// Player list
-const list=document.getElementById('players');
-list.innerHTML='';
+let h='';
 for(const p of data.players){
-const d=document.createElement('div');
-d.style.cssText='padding:5px;border-bottom:1px solid #333;font-size:12px;';
-const hp=Math.round(p.health);
-const hcolor=hp>50?'#4ade80':hp>0?''#facc15':'#f87171';
-d.innerHTML='<span style="color:'+(p.is_enemy?'#f87171':'#4ade80')+'">'+p.name+'</span> <span style="color:'+hcolor+'">HP:'+hp+'</span> <span style="color:#888">'+Math.round(p.distance)+'m</span>';
-list.appendChild(d);
+h+='<div style="padding:4px;border-bottom:1px solid #222;font-size:12px">';
+h+='<span style="color:'+(p.is_enemy?'#ff4444':'#44ff44')+'">●</span> ';
+h+='<span>'+json_escape(p.name||'?')+'</span> ';
+h+='<span style="color:#888;float:right">HP:'+(p.health||0)+' '+Math.round(p.distance||0)+'m</span>';
+h+='</div>';
 }
+document.getElementById('players').innerHTML=h;
 }
 </script>
 </body>
-</html>)HTML";
+</html>
+)HTML";
 
 namespace sky::web {
 
-bool WebServer::start(int port) {
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        LOG_ERROR("WSAStartup failed");
-        return false;
+// Thread-per-connection handler
+static void handle_client(SOCKET client, WebServer* server) {
+    // Read the HTTP request
+    char buf[8192] = {};
+    int received = recv(client, buf, sizeof(buf) - 1, 0);
+    if (received <= 0) { closesocket(client); return; }
+
+    std::string request(buf, received);
+
+    // Parse path
+    std::string path = "/";
+    size_t gp = request.find("GET ");
+    if (gp != std::string::npos) {
+        gp += 4;
+        size_t ge = request.find(" ", gp);
+        if (ge != std::string::npos) path = request.substr(gp, ge - gp);
     }
 
-    m_listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (m_listen_socket == INVALID_SOCKET) {
-        LOG_ERROR("socket() failed");
-        return false;
-    }
+    LOG_INFO("Request: " + path);
 
-    // Allow address reuse
-    BOOL opt = TRUE;
-    setsockopt(m_listen_socket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
+    if (path == "/ws") {
+        // ----- WebSocket upgrade -----
+        // Find Sec-WebSocket-Key (case-insensitive)
+        std::string low_req;
+        for (char c : request) low_req += (char)tolower((unsigned char)c);
+        size_t kp = low_req.find("sec-websocket-key: ");
+        if (kp == std::string::npos) { closesocket(client); return; }
+        kp += 19;
+        size_t ke = request.find("\r\n", kp);
+        if (ke == std::string::npos) { closesocket(client); return; }
+        std::string ws_key = request.substr(kp, ke - kp);
 
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY); // 0.0.0.0 for phone access
-    addr.sin_port = htons(port);
+        std::string accept_key = ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        uint8_t sha1[20];
+        sha1_hash((const uint8_t*)accept_key.data(), accept_key.size(), sha1);
+        std::string b64_key = base64_encode(sha1, 20);
 
-    if (bind(m_listen_socket, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        LOG_ERROR("bind() failed: " + std::to_string(WSAGetLastError()));
-        closesocket(m_listen_socket);
-        return false;
-    }
+        std::string response =
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Accept: " + b64_key + "\r\n"
+            "\r\n";
+        send(client, response.c_str(), (int)response.size(), 0);
+        LOG_INFO("WebSocket handshake sent");
 
-    if (listen(m_listen_socket, 10) == SOCKET_ERROR) {
-        LOG_ERROR("listen() failed");
-        closesocket(m_listen_socket);
-        return false;
-    }
-
-    m_running = true;
-    m_accept_thread = std::thread(&WebServer::http_thread, this);
-
-    LOG_INFO("Web server started on port " + std::to_string(port));
-    LOG_INFO("Panel URL: http://localhost:" + std::to_string(port));
-    LOG_INFO("Phone URL: http://<your-PC-IP>:" + std::to_string(port));
-    return true;
-}
-
-void WebServer::stop() {
-    m_running = false;
-    if (m_listen_socket != INVALID_SOCKET) {
-        closesocket(m_listen_socket);
-        m_listen_socket = INVALID_SOCKET;
-    }
-    if (m_accept_thread.joinable()) m_accept_thread.join();
-    WSACleanup();
-}
-
-void WebServer::http_thread() {
-    while (m_running) {
-        SOCKET client = accept(m_listen_socket, nullptr, nullptr);
-        if (client == INVALID_SOCKET) continue;
-
-        // Set timeout (long enough for browser to send request)
-        DWORD timeout = 30000;
-        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-
-        // Read request
-        char buf[4096] = {};
-        int received = recv(client, buf, sizeof(buf) - 1, 0);
-        if (received <= 0) { closesocket(client); continue; }
-
-        std::string request(buf, received);
-
-        // Parse the path from the request
-        std::string path = "/";
+        // Register client
         {
-            size_t get_pos = request.find("GET ");
-            if (get_pos != std::string::npos) {
-                get_pos += 4;
-                size_t end = request.find(" ", get_pos);
-                if (end != std::string::npos) path = request.substr(get_pos, end - get_pos);
+            std::lock_guard<std::mutex> lk(server->client_mutex);
+            server->ws_clients.push_back(client);
+        }
+        LOG_INFO("WebSocket client connected (total: " + std::to_string(server->ws_clients.size()) + ")");
+
+        // WebSocket frame loop
+        while (server->running) {
+            char rbuf[2048] = {};
+            int r = recv(client, rbuf, sizeof(rbuf), 0);
+            if (r <= 0) break;
+            std::string data(rbuf, r);
+            std::string msg = ws_unframe(data);
+            if (msg.empty()) continue;
+
+            // Parse commands
+            if (msg.find("\"type\":\"cmd\"") != std::string::npos) {
+                bool val = msg.find("\"value\":true") != std::string::npos;
+                if (msg.find("\"key\":\"esp\"") != std::string::npos && server->on_esp_toggle) server->on_esp_toggle(val);
+                else if (msg.find("\"key\":\"radar\"") != std::string::npos && server->on_radar_toggle) server->on_radar_toggle(val);
+                else if (msg.find("\"key\":\"aimbot\"") != std::string::npos && server->on_aimbot_toggle) server->on_aimbot_toggle(val);
+                else if (msg.find("\"key\":\"trigger\"") != std::string::npos && server->on_triggerbot_toggle) server->on_triggerbot_toggle(val);
             }
         }
 
-        LOG_INFO("Request: " + path);
-
-        // Route by path: /ws goes to WebSocket, everything else goes to HTTP
-        if (path == "/ws") {
-            LOG_INFO("WebSocket upgrade for /ws");
-            handle_websocket(client, request);
-        } else {
-            handle_http_request(client, request);
+        // Remove client
+        {
+            std::lock_guard<std::mutex> lk(server->client_mutex);
+            auto& v = server->ws_clients;
+            v.erase(std::remove(v.begin(), v.end(), client), v.end());
         }
-    }
-}
-
-void WebServer::handle_http_request(SOCKET client, const std::string& request) {
-    // Check what path was requested
-    std::string path = "/";
-    size_t pos = request.find("GET ");
-    if (pos != std::string::npos) {
-        pos += 4;
-        size_t end = request.find(" ", pos);
-        if (end != std::string::npos) path = request.substr(pos, end - pos);
+        closesocket(client);
+        LOG_INFO("WebSocket client disconnected");
+        return;
     }
 
+    // ----- HTTP request -----
+    // Favicon: skip
     if (path == "/favicon.ico") {
-        // Return 204 No Content for favicon
-        std::string resp = "HTTP/1.1 204 No Content\r\n\r\n";
-        send(client, resp.c_str(), (int)resp.size(), 0);
+        std::string r = "HTTP/1.1 204 No Content\r\n\r\n";
+        send(client, r.c_str(), (int)r.size(), 0);
         closesocket(client);
         return;
     }
 
-    // Serve the main page
-    std::string response = "HTTP/1.1 200 OK\r\n";
-    response += "Content-Type: text/html; charset=UTF-8\r\n";
-    response += "Connection: close\r\n";
-    response += "Access-Control-Allow-Origin: *\r\n";
-    response += "\r\n";
-    response += HTML_PAGE;
-
+    // Serve HTML page
+    std::string response =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=UTF-8\r\n"
+        "Connection: close\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "\r\n" +
+        std::string(HTML_PAGE);
     send(client, response.c_str(), (int)response.size(), 0);
     closesocket(client);
 }
 
-void WebServer::handle_websocket(SOCKET client, const std::string& request) {
-    LOG_INFO("handle_websocket called, request length: " + std::to_string(request.size()));
+bool WebServer::start(int port) {
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return false;
 
-    // Parse Sec-WebSocket-Key (case-insensitive search)
-    std::string req_lower;
-    for (char c : request) req_lower += (char)tolower((unsigned char)c);
-    size_t key_pos = req_lower.find("sec-websocket-key: ");
-    if (key_pos == std::string::npos) {
-        LOG_ERROR("Sec-WebSocket-Key not found in request!");
-        LOG_ERROR("Request: " + request.substr(0, 300));
-        closesocket(client);
-        return;
+    m_listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (m_listen_socket == INVALID_SOCKET) { WSACleanup(); return false; }
+
+    int opt = 1;
+    setsockopt(m_listen_socket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
+
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(port);
+
+    if (bind(m_listen_socket, (sockaddr*)&addr, sizeof(addr)) != 0) {
+        closesocket(m_listen_socket);
+        WSACleanup();
+        return false;
     }
-    key_pos += 19;  // Length of "sec-websocket-key: "
-    size_t key_end = request.find("\r\n", key_pos);
-    std::string ws_key = request.substr(key_pos, key_end - key_pos);
-    LOG_INFO("WebSocket key: '" + ws_key + "'");
-    std::string accept_key = ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-    uint8_t sha1_hash[20];
-    sha1((const uint8_t*)accept_key.c_str(), accept_key.size(), sha1_hash);
-    std::string encoded = base64_encode(sha1_hash, 20);
-
-    std::string response = "HTTP/1.1 101 Switching Protocols\r\n";
-    response += "Upgrade: websocket\r\n";
-    response += "Connection: Upgrade\r\n";
-    response += "Sec-WebSocket-Accept: " + encoded + "\r\n";
-    response += "\r\n";
-
-    int sent = send(client, response.c_str(), (int)response.size(), 0);
-    LOG_INFO("Sent 101 response (" + std::to_string(sent) + " bytes)");
-    if (sent == SOCKET_ERROR) {
-        LOG_ERROR("send failed: " + std::to_string(WSAGetLastError()));
-        closesocket(client);
-        return;
+    if (listen(m_listen_socket, 10) != 0) {
+        closesocket(m_listen_socket);
+        WSACleanup();
+        return false;
     }
 
-    // Add to clients list
-    {
-        std::lock_guard<std::mutex> lock(m_clients_mutex);
-        m_ws_clients.push_back(client);
-        LOG_INFO("WebSocket client connected (total: " + std::to_string(m_ws_clients.size()) + ")");
-    }
-
-    // Send initial snapshot
-    {
-        std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-        std::string json = "{";
-        json += "\"InGame\":false,\"players\":[]";
-        json += "}";
-        std::string frame = ws_frame(json);
-        send(client, frame.c_str(), (int)frame.size(), 0);
-    }
-
-    // Listen for commands
-    while (m_running) {
-        char rbuf[1024] = {};
-        int r = recv(client, rbuf, sizeof(rbuf), 0);
-        if (r <= 0) break;
-
-        std::string data(rbuf, r);
-        std::string msg = ws_unframe(data);
-        if (msg.empty()) continue;
-
-        // Parse commands
-        if (msg.find("\"type\":\"cmd\"") != std::string::npos) {
-            bool val = msg.find("\"value\":true") != std::string::npos;
-            if (msg.find("\"key\":\"esp\"") != std::string::npos && on_esp_toggle) on_esp_toggle(val);
-            else if (msg.find("\"key\":\"radar\"") != std::string::npos && on_radar_toggle) on_radar_toggle(val);
-            else if (msg.find("\"key\":\"aimbot\"") != std::string::npos && on_aimbot_toggle) on_aimbot_toggle(val);
-            else if (msg.find("\"key\":\"trigger\"") != std::string::npos && on_triggerbot_toggle) on_triggerbot_toggle(val);
-            LOG_INFO("Web cmd: " + msg);
+    LOG_INFO("Web server started on port " + std::to_string(port));
+    running = true;
+    m_accept_thread = std::thread([this]() {
+        while (running) {
+            SOCKET client = accept(m_listen_socket, nullptr, nullptr);
+            if (client == INVALID_SOCKET) continue;
+            // Spawn a thread for each connection
+            std::thread(handle_client, client, this).detach();
         }
-    }
-
-    // Remove from clients
-    {
-        std::lock_guard<std::mutex> lock(m_clients_mutex);
-        m_ws_clients.erase(std::remove(m_ws_clients.begin(), m_ws_clients.end(), client), m_ws_clients.end());
-    }
-    closesocket(client);
-    LOG_INFO("WebSocket client disconnected");
+    });
+    m_accept_thread.detach();
+    return true;
 }
 
-void WebServer::update_snapshot(const GameSnapshot& snap) {
-    std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-    m_snapshot = snap;
-
-    // Build JSON
-    std::string json = "{";
-    json += "\"InGame\":" + std::string(snap.InGame ? "true" : "false") + ",";
-    json += "\"camera\":{\"x\":" + std::to_string(snap.camera_x) + ",\"y\":" + std::to_string(snap.camera_y) + ",\"z\":" + std::to_string(snap.camera_z) + "},";
-    json += "\"players\":[";
-    for (size_t i = 0; i < snap.players.size(); i++) {
-        auto& p = snap.players[i];
-        if (i > 0) json += ",";
-        json += "{\"name\":\"" + json_escape(p.name) + "\",";
-        json += "\"health\":" + std::to_string(p.health) + ",";
-        json += "\"pos_x\":" + std::to_string(p.pos_x) + ",\"pos_y\":" + std::to_string(p.pos_y) + ",\"pos_z\":" + std::to_string(p.pos_z) + ",";
-        json += "\"is_enemy\":" + std::string(p.is_enemy ? "true" : "false") + ",";
-        json += "\"distance\":" + std::to_string(p.distance) + ",";
-        json += "\"visible\":" + std::string(p.visible ? "true" : "false");
-        json += "}";
+void WebServer::stop() {
+    running = false;
+    if (m_listen_socket != INVALID_SOCKET) {
+        closesocket(m_listen_socket);
+        m_listen_socket = INVALID_SOCKET;
     }
-    json += "]}";
-
-    broadcast_ws(json);
-}
-
-GameSnapshot WebServer::get_snapshot() const {
-    std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-    return m_snapshot;
+    WSACleanup();
 }
 
 void WebServer::broadcast_ws(const std::string& msg) {
-    std::lock_guard<std::mutex> lock(m_clients_mutex);
-    std::string frame = ws_frame(msg);
-    for (auto it = m_ws_clients.begin(); it != m_ws_clients.end();) {
-        if (send(*it, frame.c_str(), (int)frame.size(), 0) == SOCKET_ERROR) {
-            closesocket(*it);
-            it = m_ws_clients.erase(it);
+    // Build WebSocket frame
+    std::string frame;
+    frame += (char)0x81; // text frame, FIN
+    size_t len = msg.size();
+    if (len < 126) {
+        frame += (char)len;
+    } else if (len < 65536) {
+        frame += (char)126;
+        frame += (char)((len >> 8) & 0xFF);
+        frame += (char)(len & 0xFF);
+    } else {
+        frame += (char)127;
+        for (int i = 7; i >= 0; i--)
+            frame += (char)((len >> (i * 8)) & 0xFF);
+    }
+    frame += msg;
+
+    std::lock_guard<std::mutex> lk(client_mutex);
+    for (auto it = ws_clients.begin(); it != ws_clients.end(); ) {
+        SOCKET c = *it;
+        int sent = send(c, frame.data(), (int)frame.size(), 0);
+        if (sent <= 0) {
+            closesocket(c);
+            it = ws_clients.erase(it);
         } else {
             ++it;
         }
     }
+}
+
+void WebServer::update_snapshot(const GameSnapshot& snap) {
+    std::lock_guard<std::mutex> snap_lock(snapshot_mutex);
+    m_snapshot = snap;
+    std::string json = "{";
+    json += "\"InGame\":" + std::string(snap.InGame ? "true" : "false") + ",";
+    json += "\"FPS\":0,";
+    json += "\"camera_x\":" + std::to_string(snap.camera_x) + ",";
+    json += "\"camera_y\":" + std::to_string(snap.camera_y) + ",";
+    json += "\"camera_z\":" + std::to_string(snap.camera_z) + ",";
+    json += "\"players\":[";
+    for (size_t i = 0; i < snap.players.size(); i++) {
+        if (i > 0) json += ",";
+        json += "{";
+        json += "\"name\":\"" + json_escape(snap.players[i].name) + "\",";
+        json += "\"health\":" + std::to_string(snap.players[i].health) + ",";
+        json += "\"distance\":" + std::to_string(snap.players[i].distance) + ",";
+        json += "\"pos_x\":" + std::to_string(snap.players[i].pos_x) + ",";
+        json += "\"pos_y\":" + std::to_string(snap.players[i].pos_y) + ",";
+        json += "\"pos_z\":" + std::to_string(snap.players[i].pos_z) + ",";
+        json += "\"is_enemy\":" + std::string(snap.players[i].is_enemy ? "true" : "false");
+        json += "}";
+    }
+    json += "]}";
+    broadcast_ws(json);
+}
+
+GameSnapshot WebServer::get_snapshot() const {
+    std::lock_guard<std::mutex> lk(snapshot_mutex);
+    return m_snapshot;
 }
 
 } // namespace sky::web
