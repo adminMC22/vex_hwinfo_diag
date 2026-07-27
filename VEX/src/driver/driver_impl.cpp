@@ -531,12 +531,25 @@ namespace sky::driver {
         if (s_kernel_vbase == 0) return false;
 
         // Scan physical memory for the PE signature (MZ)
-        // Kernel is typically 1MB-aligned or 2MB-aligned, so 64KB step is safe
+        // Use dynamic scan range based on installed RAM
+        MEMORYSTATUSEX mem = { sizeof(MEMORYSTATUSEX) };
+        GlobalMemoryStatusEx(&mem);
+        uint64_t total_phys = mem.ullTotalPhys;
+        if (total_phys < 0x20000000ULL) total_phys = 0x20000000ULL; // min 512MB
+        if (total_phys > 0x200000000ULL) total_phys = 0x200000000ULL; // cap at 128GB
+        LOG_INFO("kernel scan: scanning 0-" + std::to_string(total_phys >> 30) +
+            "GB at 256KB intervals (total RAM: " + std::to_string(total_phys >> 20) + " MB)...");
+
         uint8_t page[0x1000];
-        constexpr uintptr_t STEP = 0x10000; // 64KB step (safe for any page-aligned kernel)
-        LOG_INFO("kernel scan: scanning 0-4GB at 64KB intervals...");
-        for (uintptr_t pa = 0; pa < 0x100000000ULL; pa += STEP) {
-            if (!read_physical(pa, page, 0x1000)) continue;
+        constexpr uintptr_t STEP = 0x40000; // 256KB step
+        constexpr uint64_t PROGRESS_STEP = 0x100000000ULL; // report every 4GB
+        uint64_t next_progress = PROGRESS_STEP;
+        for (uint64_t pa = 0; pa < total_phys; pa += STEP) {
+            if (pa >= next_progress) {
+                LOG_INFO("kernel scan: scanned " + std::to_string(pa >> 30) + "GB...");
+                next_progress += PROGRESS_STEP;
+            }
+            if (!read_physical((uintptr_t)pa, page, 0x1000)) continue;
             if (page[0] != 'M' || page[1] != 'Z') continue;
 
             uint32_t pe_off;
@@ -552,35 +565,29 @@ namespace sky::driver {
 
             LOG_INFO("kernel scan: found ntoskrnl candidate at phys=0x" +
                 std::format("{:x}", pa) + " size=0x" + std::format("{:x}", size_of_image));
-            s_kernel_pbase = pa;
+            s_kernel_pbase = (uintptr_t)pa;
             break;
         }
 
         if (s_kernel_pbase == 0) {
-            // Fallback: try to derive physical base from virtual address
-            // On many Windows 10/11 systems: phys ≈ virt - 0xFFFFF80000000000
-            uintptr_t candidate_pa = s_kernel_vbase - 0xFFFFF80000000000ULL;
-            LOG_INFO("kernel scan: trying formula-based scan at 0x" +
-                std::format("{:x}", candidate_pa) + " ±4MB");
-
-            uint8_t scan_page[0x1000];
-            uintptr_t start = (candidate_pa > 0x400000) ? candidate_pa - 0x400000 : 0;
-            uintptr_t end = candidate_pa + 0x400000;
-            for (uintptr_t pa = start; pa < end && pa < 0x200000000ULL; pa += 0x1000) {
-                if (!read_physical(pa, scan_page, 0x1000)) continue;
-                if (scan_page[0] != 'M' || scan_page[1] != 'Z') continue;
-
+            // Fallback: 4KB granularity scan around the formula-derived address
+            uintptr_t candidate_pa = (uintptr_t)(s_kernel_vbase - 0xFFFFF80000000000ULL);
+            LOG_INFO("kernel scan: fallback scanning 0x" +
+                std::format("{:x}", candidate_pa) + " ±32MB at 4KB");
+            uintptr_t start = (candidate_pa > 0x2000000) ? candidate_pa - 0x2000000 : 0;
+            uintptr_t end = candidate_pa + 0x2000000;
+            for (uintptr_t pa = start; pa < end; pa += 0x1000) {
+                if (!read_physical(pa, page, 0x1000)) continue;
+                if (page[0] != 'M' || page[1] != 'Z') continue;
                 uint32_t pe_off;
-                memcpy(&pe_off, scan_page + 0x3C, sizeof(pe_off));
+                memcpy(&pe_off, page + 0x3C, sizeof(pe_off));
                 if (pe_off > 0x1000 - 4) continue;
-                if (scan_page[pe_off] != 'P' || scan_page[pe_off + 1] != 'E') continue;
-
+                if (page[pe_off] != 'P' || page[pe_off + 1] != 'E') continue;
                 uint32_t size_of_image;
-                memcpy(&size_of_image, scan_page + pe_off + 0x50, sizeof(size_of_image));
+                memcpy(&size_of_image, page + pe_off + 0x50, sizeof(size_of_image));
                 if (size_of_image < 0x400000 || size_of_image > 0x4000000) continue;
-
-                LOG_INFO("kernel scan: found ntoskrnl via formula at phys=0x" +
-                    std::format("{:x}", pa) + " size=0x" + std::format("{:x}", size_of_image));
+                LOG_INFO("kernel scan: found via formula fallback at phys=0x" +
+                    std::format("{:x}", pa));
                 s_kernel_pbase = pa;
                 break;
             }
