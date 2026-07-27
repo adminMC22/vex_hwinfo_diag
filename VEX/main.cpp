@@ -95,7 +95,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                     snap.camera_x = cam.Location.X;
                     snap.camera_y = cam.Location.Y;
                     snap.camera_z = cam.Location.Z;
-                    snap.fov = cam.FOV;
 
                     for (const auto& actor : actors.players_list) {
                         auto health = actor.damage_handler.GetHealth();

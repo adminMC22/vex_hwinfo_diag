@@ -58,4 +58,6 @@ private:
     std::thread m_accept_thread;
 };
 
+inline WebServer g_web;
+
 } // namespace sky::web
