@@ -331,24 +331,48 @@ void WebServer::http_thread() {
 
         std::string request(buf, received);
 
-        LOG_INFO("HTTP request received: " + request.substr(0, 100));
+        // Parse the path from the request
+        std::string path = "/";
+        {
+            size_t get_pos = request.find("GET ");
+            if (get_pos != std::string::npos) {
+                get_pos += 4;
+                size_t end = request.find(" ", get_pos);
+                if (end != std::string::npos) path = request.substr(get_pos, end - get_pos);
+            }
+        }
 
-        // Check if WebSocket upgrade (case-insensitive)
-        std::string request_lower;
-        for (char c : request) request_lower += (char)tolower((unsigned char)c);
-        bool is_ws = request_lower.find("upgrade: websocket") != std::string::npos;
+        LOG_INFO("Request: " + path);
 
-        if (is_ws) {
-            LOG_INFO("WebSocket upgrade detected");
+        // Route by path: /ws goes to WebSocket, everything else goes to HTTP
+        if (path == "/ws") {
+            LOG_INFO("WebSocket upgrade for /ws");
             handle_websocket(client, request);
         } else {
-            LOG_INFO("HTTP request (serving page)");
             handle_http_request(client, request);
         }
     }
 }
 
 void WebServer::handle_http_request(SOCKET client, const std::string& request) {
+    // Check what path was requested
+    std::string path = "/";
+    size_t pos = request.find("GET ");
+    if (pos != std::string::npos) {
+        pos += 4;
+        size_t end = request.find(" ", pos);
+        if (end != std::string::npos) path = request.substr(pos, end - pos);
+    }
+
+    if (path == "/favicon.ico") {
+        // Return 204 No Content for favicon
+        std::string resp = "HTTP/1.1 204 No Content\r\n\r\n";
+        send(client, resp.c_str(), (int)resp.size(), 0);
+        closesocket(client);
+        return;
+    }
+
+    // Serve the main page
     std::string response = "HTTP/1.1 200 OK\r\n";
     response += "Content-Type: text/html; charset=UTF-8\r\n";
     response += "Connection: close\r\n";
