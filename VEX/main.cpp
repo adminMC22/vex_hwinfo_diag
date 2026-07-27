@@ -1,5 +1,6 @@
 #include "include/common.hpp"
 #include "include/sky.hpp"
+#include "include/game/offsets.hpp"
 #include "include/web/web_server.hpp"
 #include "src/utils/console_logger.cpp"
 #include "src/utils/memory_config.cpp"

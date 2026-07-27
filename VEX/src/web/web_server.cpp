@@ -98,7 +98,7 @@ static std::string ws_unframe(const std::string& data) {
     if (data.size() < header + len) return "";
     std::string payload(data.begin() + header, data.begin() + header + len);
     if (masked) {
-        uint8_t mask[4] = { data[header-4], data[header-3], data[header-2], data[header-1] };
+        uint8_t mask[4] = { (uint8_t)data[header-4], (uint8_t)data[header-3], (uint8_t)data[header-2], (uint8_t)data[header-1] };
         for (size_t i = 0; i < payload.size(); i++)
             payload[i] ^= mask[i % 4];
     }
