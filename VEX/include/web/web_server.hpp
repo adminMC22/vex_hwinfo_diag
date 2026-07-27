@@ -48,9 +48,9 @@ public:
     std::atomic<bool> running{false};
 
     // Shared state (public so handle_client can access)
-    std::mutex client_mutex;
+    mutable std::mutex client_mutex;
     std::vector<SOCKET> ws_clients;
-    std::mutex snapshot_mutex;
+    mutable std::mutex snapshot_mutex;
     GameSnapshot m_snapshot;
 
 private:
