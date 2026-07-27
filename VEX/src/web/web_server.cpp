@@ -16,9 +16,9 @@ static void sha1_hash(const uint8_t* input, size_t len, uint8_t output[20]) {
     msg[len] = 0x80;
     memset(msg + len + 1, 0, new_len - len - 1);
     msg[new_len - 3] = (uint8_t)((len * 8) >> 24);
-    msg[new_len - 4] = (uint8_t)((len * 8) >> 16);
-    msg[new_len - 5] = (uint8_t)((len * 8) >> 8);
-    msg[new_len - 6] = (uint8_t)((len * 8) >> 0);
+    msg[new_len - 2] = (uint8_t)((len * 8) >> 16);
+    msg[new_len - 1] = (uint8_t)((len * 8) >> 8);
+    msg[new_len]     = (uint8_t)((len * 8) & 0xFF);
     for (size_t i = 0; i <= new_len; i += 64) {
         uint32_t w[80];
         for (int t = 0; t < 16; t++)
