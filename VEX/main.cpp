@@ -82,6 +82,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 break;
             }
 
+            // If game engine isn't attached to the process, retry
+            if (!game_engine->is_running()) {
+                // Try to attach to Valorant process
+                if (game_engine->set_target_process(L"VALORANT-Win64-Shipping.exe")) {
+                    game_engine->start();
+                    LOG_INFO("Game engine started — Valorant found");
+                } else {
+                    Sleep(500);
+                    continue;
+                }
+            }
+
             // Get game data and push to web clients
             if (game_engine->is_running()) {
                 auto world = game_engine->get_world_data();
