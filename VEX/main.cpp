@@ -47,15 +47,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
         LOG_INFO("Web server running on http://localhost:8080");
 
-        // Step 4: Initialize game engine
+        // Step 4: Initialize game engine (creates VGK, does NOT start threads yet)
         auto game_engine = sky::game::engine::m_game_engine;
-        if (!game_engine->initialize()) {
-            LOG_WARNING("Game engine initialize failed — is Valorant running?");
-            LOG_INFO("Continuing anyway — panel will show when game starts");
-        } else {
-            game_engine->start();
-            LOG_INFO("Game engine started");
-        }
+        game_engine->initialize();
+        LOG_INFO("Game engine initialized (waiting for Valorant process)");
 
         // Step 5: Wire web callbacks to config
         sky::web::g_web.on_aimbot_toggle = [](bool val) {
