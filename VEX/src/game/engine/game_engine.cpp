@@ -212,10 +212,11 @@ namespace sky::game::engine {
                 {
                     auto wd = m_world_data;
                     if (wd.is_valid) {
-                        LOG_INFO("World: is_valid=true, camera=(" +
-                            std::to_string((int)wd.camera.Location.X) + "," +
-                            std::to_string((int)wd.camera.Location.Y) + "," +
-                            std::to_string((int)wd.camera.Location.Z) + ")");
+                        auto cv = wd.player_camera_manager.get_camera_view();
+                        LOG_INFO("World: valid=true, camera=(" +
+                            std::to_string((int)cv.Location.X) + "," +
+                            std::to_string((int)cv.Location.Y) + "," +
+                            std::to_string((int)cv.Location.Z) + ")");
                     }
                 }
             }
