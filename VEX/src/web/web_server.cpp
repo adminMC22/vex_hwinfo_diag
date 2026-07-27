@@ -385,14 +385,22 @@ void WebServer::handle_http_request(SOCKET client, const std::string& request) {
 }
 
 void WebServer::handle_websocket(SOCKET client, const std::string& request) {
+    LOG_INFO("handle_websocket called, request length: " + std::to_string(request.size()));
+
     // Parse Sec-WebSocket-Key (case-insensitive search)
     std::string req_lower;
     for (char c : request) req_lower += (char)tolower((unsigned char)c);
     size_t key_pos = req_lower.find("sec-websocket-key: ");
-    if (key_pos == std::string::npos) { closesocket(client); return; }
+    if (key_pos == std::string::npos) {
+        LOG_ERROR("Sec-WebSocket-Key not found in request!");
+        LOG_ERROR("Request: " + request.substr(0, 300));
+        closesocket(client);
+        return;
+    }
     key_pos += 19;  // Length of "sec-websocket-key: "
     size_t key_end = request.find("\r\n", key_pos);
     std::string ws_key = request.substr(key_pos, key_end - key_pos);
+    LOG_INFO("WebSocket key: '" + ws_key + "'");
     std::string accept_key = ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     uint8_t sha1_hash[20];
@@ -405,7 +413,10 @@ void WebServer::handle_websocket(SOCKET client, const std::string& request) {
     response += "Sec-WebSocket-Accept: " + encoded + "\r\n";
     response += "\r\n";
 
-    if (send(client, response.c_str(), (int)response.size(), 0) == SOCKET_ERROR) {
+    int sent = send(client, response.c_str(), (int)response.size(), 0);
+    LOG_INFO("Sent 101 response (" + std::to_string(sent) + " bytes)");
+    if (sent == SOCKET_ERROR) {
+        LOG_ERROR("send failed: " + std::to_string(WSAGetLastError()));
         closesocket(client);
         return;
     }
