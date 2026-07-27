@@ -236,9 +236,17 @@ namespace sky::game::engine {
                 }
             }
             catch (const std::exception& e) {
-                LOG_ERROR(std::format("Exception in world thread: {}", e.what()));
+                LOG_ERROR(std::format("Exception in world thread: {0}", e.what()));
             }
-            Sleep(16);
+            // If world data failed, back off to avoid spamming failed scans
+            {
+                auto snap = m_world_data;
+                if (!snap.is_valid || m_needs_refresh.load()) {
+                    Sleep(1000);
+                } else {
+                    Sleep(16);
+                }
+            }
         }
     }
 

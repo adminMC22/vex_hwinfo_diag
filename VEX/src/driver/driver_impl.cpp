@@ -9,6 +9,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <map>
 
 #pragma comment(lib, "ntdll.lib")
 
@@ -556,7 +557,37 @@ namespace sky::driver {
         }
 
         if (s_kernel_pbase == 0) {
-            LOG_WARNING("kernel scan: not found in 0-4GB");
+            // Fallback: try to derive physical base from virtual address
+            // On many Windows 10/11 systems: phys ≈ virt - 0xFFFFF80000000000
+            uintptr_t candidate_pa = s_kernel_vbase - 0xFFFFF80000000000ULL;
+            LOG_INFO("kernel scan: trying formula-based scan at 0x" +
+                std::format("{:x}", candidate_pa) + " ±4MB");
+
+            uint8_t scan_page[0x1000];
+            uintptr_t start = (candidate_pa > 0x400000) ? candidate_pa - 0x400000 : 0;
+            uintptr_t end = candidate_pa + 0x400000;
+            for (uintptr_t pa = start; pa < end && pa < 0x200000000ULL; pa += 0x1000) {
+                if (!read_physical(pa, scan_page, 0x1000)) continue;
+                if (scan_page[0] != 'M' || scan_page[1] != 'Z') continue;
+
+                uint32_t pe_off;
+                memcpy(&pe_off, scan_page + 0x3C, sizeof(pe_off));
+                if (pe_off > 0x1000 - 4) continue;
+                if (scan_page[pe_off] != 'P' || scan_page[pe_off + 1] != 'E') continue;
+
+                uint32_t size_of_image;
+                memcpy(&size_of_image, scan_page + pe_off + 0x50, sizeof(size_of_image));
+                if (size_of_image < 0x400000 || size_of_image > 0x4000000) continue;
+
+                LOG_INFO("kernel scan: found ntoskrnl via formula at phys=0x" +
+                    std::format("{:x}", pa) + " size=0x" + std::format("{:x}", size_of_image));
+                s_kernel_pbase = pa;
+                break;
+            }
+        }
+
+        if (s_kernel_pbase == 0) {
+            LOG_WARNING("kernel scan: not found");
             return false;
         }
 
@@ -688,6 +719,13 @@ namespace sky::driver {
 
         bool stream_mode(HWND, uint32_t) override { return false; }
         uintptr_t get_kernel_base(const std::string& module_name) override {
+            // Cache kernel base results — this function is called 3x per loop tick
+            static std::map<std::string, uintptr_t> s_kernel_cache;
+            {
+                auto it = s_kernel_cache.find(module_name);
+                if (it != s_kernel_cache.end()) return it->second;
+            }
+
             // Enumerate kernel modules via NtQuerySystemInformation
             ULONG size = 0;
             NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, NULL, 0, &size);
@@ -702,18 +740,23 @@ namespace sky::driver {
             }
 
             auto modules = (PSYSTEM_MODULE_INFORMATION)buf.data();
+            uintptr_t base = 0;
             for (ULONG i = 0; i < modules->Count; ++i) {
                 auto& mod = modules->Module[i];
                 std::string name((char*)mod.FullPathName + mod.OffsetToFileName);
                 if (_stricmp(name.c_str(), module_name.c_str()) == 0) {
-                    uintptr_t base = (uintptr_t)mod.ImageBase;
-                    LOG_INFO("get_kernel_base: " + module_name + " -> 0x" + std::format("{:x}", base));
-                    return base;
+                    base = (uintptr_t)mod.ImageBase;
+                    LOG_DEBUG("get_kernel_base: " + module_name + " -> 0x" + std::format("{:x}", base));
+                    break;
                 }
             }
 
-            LOG_WARNING("get_kernel_base: " + module_name + " not found");
-            return 0;
+            if (base == 0) {
+                LOG_WARNING("get_kernel_base: " + module_name + " not found");
+            }
+
+            s_kernel_cache[module_name] = base;
+            return base;
         }
         void* find_pattern(uintptr_t, const char*, const char*) override { return nullptr; }
 
@@ -721,7 +764,7 @@ namespace sky::driver {
             if (dir) {
                 m_dtb = (uintptr_t)dir;
                 m_dtb_set = true;
-                LOG_INFO("DTB set: 0x" + std::to_string(m_dtb));
+                LOG_DEBUG("DTB set: 0x" + std::format("{:x}", m_dtb));
             }
         }
 
