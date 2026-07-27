@@ -6,7 +6,7 @@
 #include "src/utils/memory_config.cpp"
 #include "src/game/lineups.cpp"
 #include "src/core/application.cpp"
-#include "src/web/web_server.cpp"
+// web_server.cpp is compiled separately (in vcxproj ClCompile list)
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
     // Enable console for diagnostics
