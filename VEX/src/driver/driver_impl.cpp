@@ -8,8 +8,28 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 
 #pragma comment(lib, "ntdll.lib")
+
+// Module information structures for NtQuerySystemInformation
+typedef struct _SYSTEM_MODULE_ENTRY {
+    HANDLE Section;
+    PVOID MappedBase;
+    PVOID ImageBase;
+    ULONG ImageSize;
+    ULONG Flags;
+    USHORT LoadOrderIndex;
+    USHORT InitOrderIndex;
+    USHORT LoadCount;
+    USHORT OffsetToFileName;
+    UCHAR FullPathName[256];
+} SYSTEM_MODULE_ENTRY, *PSYSTEM_MODULE_ENTRY;
+
+typedef struct _SYSTEM_MODULE_INFORMATION {
+    ULONG Count;
+    SYSTEM_MODULE_ENTRY Module[1];
+} SYSTEM_MODULE_INFORMATION, *PSYSTEM_MODULE_INFORMATION;
 
 // NT APIs for driver loading
 extern "C" NTSTATUS NTAPI NtLoadDriver(PUNICODE_STRING DriverServiceName);
@@ -497,9 +517,9 @@ namespace sky::driver {
         status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, buf.data(), size, &size);
         if (!NT_SUCCESS(status)) return false;
 
-        auto modules = (PRTL_PROCESS_MODULES)buf.data();
-        for (ULONG i = 0; i < modules->NumberOfModules; ++i) {
-            auto& mod = modules->Modules[i];
+        auto modules = (PSYSTEM_MODULE_INFORMATION)buf.data();
+        for (ULONG i = 0; i < modules->Count; ++i) {
+            auto& mod = modules->Module[i];
             std::string name((char*)mod.FullPathName + mod.OffsetToFileName);
             if (name == "ntoskrnl.exe") {
                 s_kernel_vbase = (uintptr_t)mod.ImageBase;
@@ -672,9 +692,9 @@ namespace sky::driver {
                 return 0;
             }
 
-            auto modules = (PRTL_PROCESS_MODULES)buf.data();
-            for (ULONG i = 0; i < modules->NumberOfModules; ++i) {
-                auto& mod = modules->Modules[i];
+            auto modules = (PSYSTEM_MODULE_INFORMATION)buf.data();
+            for (ULONG i = 0; i < modules->Count; ++i) {
+                auto& mod = modules->Module[i];
                 std::string name((char*)mod.FullPathName + mod.OffsetToFileName);
                 if (_stricmp(name.c_str(), module_name.c_str()) == 0) {
                     uintptr_t base = (uintptr_t)mod.ImageBase;
