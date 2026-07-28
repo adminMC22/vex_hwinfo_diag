@@ -115,9 +115,9 @@ int main() {
     try_device("\\\\.\\RTCore64", "RTCore64 (8-byte)", rtc_codes, 5, 1);
     try_device("\\\\.\\RTCore64", "RTCore64 (flat)", rtc_codes, 5, 2);
 
-    printf("\n=== HWiNFO (numbered devices 215-200 + generic) ===\n");
+    printf("\n=== HWiNFO (numbered devices 215-150 + generic) ===\n");
     DWORD hwinfo_codes[] = { 0x9C40259C, 0x9C4025A0, 0x9C40609C, 0x9C406094 };
-    for (int ver = 215; ver >= 200; ver--) {
+    for (int ver = 215; ver >= 150; ver--) {
         char path[64], label[64];
         snprintf(path, sizeof(path), "\\\\.\\HWiNFO_%d", ver);
         snprintf(label, sizeof(label), "HWiNFO_%d", ver);
