@@ -1,44 +1,20 @@
-// sky_diag.cpp — Comprehensive device + IOCTL diagnostic tool (safe: no brute-force)
-// Tries all known devices × known IOCTL codes × known formats
-// Compile: cl /O2 sky_diag.cpp /EHsc
-// Run as Admin after starting your target tools (Afterburner, HWiNFO, etc.)
-
+// sky_diag.cpp — Comprehensive device + IOCTL diagnostic tool (v3)
+// Tries ALL HWiNFO numbered devices (200-215) + RTCore64 + others
+// Run as Admin with MSI Afterburner and HWiNFO64 running
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
 
-// RTCore64 protocol (CVE-2019-16098, OLD vulnerable driver only)
-// Device: \\.\RTCore64
-// Read: 0x80002048, Write: 0x8000204C
-// Format: 48-byte struct [8pad][8addr][8pad][4size][4value][16pad]
 #pragma pack(push, 1)
 struct RTCORE_48 {
-    BYTE   pad0[8];
+    BYTE    pad0[8];
     DWORD64 Address;
-    BYTE   pad1[8];
-    DWORD  Size;
-    DWORD  Value;
-    BYTE   pad2[16];
+    BYTE    pad1[8];
+    DWORD   Size;
+    DWORD   Value;
+    BYTE    pad2[16];
 };
 #pragma pack(pop)
-
-// HWiNFO protocol (various versions)
-// Device: \\.\HWiNFO, \\.\HWiNFO64, \\.\HWiNFO_xxx
-// Format: 8-byte address (LARGE_INTEGER) in, raw data out
-
-// GIO/gdrv protocol (Gigabyte)
-// Device: \\.\GIO
-// Read: 0xC3502002, Write: 0xC3502006
-// Format: [4 size][8 addr][data] (24+data bytes) or similar
-
-struct TestSpec {
-    const char* device_path;    // e.g. "\\\\.\\RTCore64"
-    const char* label;          // human-readable label
-    DWORD ioctl_codes[6];       // up to 6 IOCTL codes to test
-    int n_codes;                // how many in the list
-    int format_type;            // 0=RTC48, 1=8byte-in/out, 2=flat [8addr+data]
-    const char* notes;          // any notes
-};
 
 void test_device(HANDLE hDev, const char* label, DWORD code, int fmt) {
     DWORD gle = 999, returned = 0;
@@ -47,14 +23,15 @@ void test_device(HANDLE hDev, const char* label, DWORD code, int fmt) {
     BOOL ok = FALSE;
 
     switch (fmt) {
-    case 0: {  // RTC48 struct: 48 bytes in == out
+    case 0: {  // RTC48 struct
         RTCORE_48* r = (RTCORE_48*)ibuf;
         r->Address = 0xF0000;
         r->Size = 4;
         ok = DeviceIoControl(hDev, code, ibuf, 48, ibuf, 48, &returned, NULL);
         if (ok) gle = 0; else gle = GetLastError();
-        printf("  %-40s 0x%08X RTC48    -> %s  val=0x%08X ret=%d\n",
-               label, code, ok ? "OK" : "FAIL", ok ? r->Value : 0, returned);
+        printf("  0x%08X RTC48 -> %s  val=0x%08X ret=%d%s\n",
+               code, ok ? "OK" : "FAIL", ok ? r->Value : 0, returned,
+               (ok && r->Value) ? " *** DATA ***" : "");
         break;
     }
     case 1: {  // 8-byte address in, data out
@@ -63,37 +40,36 @@ void test_device(HANDLE hDev, const char* label, DWORD code, int fmt) {
         if (ok) gle = 0; else gle = GetLastError();
         DWORD val = 0;
         if (ok && returned >= 4) memcpy(&val, obuf, 4);
-        printf("  %-40s 0x%08X 8B-IN    -> %s  val=0x%08X ret=%d%s\n",
-               label, code, ok ? "OK" : "FAIL", val, returned,
-               ok && val ? " *** DATA ***" : "");
+        printf("  0x%08X 8BIN -> %s  val=0x%08X ret=%d%s\n",
+               code, ok ? "OK" : "FAIL", val, returned,
+               (ok && val) ? " *** DATA ***" : "");
         break;
     }
-    case 2: {  // flat: [8addr+data] combined
+    case 2: {  // flat: [8addr+data]
         DWORD64 addr = 0xF0000;
         memcpy(ibuf, &addr, 8);
         ok = DeviceIoControl(hDev, code, ibuf, 8+4, ibuf, 8+0x100, &returned, NULL);
         if (ok) gle = 0; else gle = GetLastError();
         DWORD val = 0;
         if (ok && returned > 8) memcpy(&val, ibuf+8, 4);
-        printf("  %-40s 0x%08X FLAT     -> %s  val=0x%08X ret=%d%s\n",
-               label, code, ok ? "OK" : "FAIL", val, returned,
-               ok && val ? " *** DATA ***" : "");
+        printf("  0x%08X FLAT -> %s  val=0x%08X ret=%d%s\n",
+               code, ok ? "OK" : "FAIL", val, returned,
+               (ok && val) ? " *** DATA ***" : "");
         if (!ok) {
-            // Try again with exact same size for in/out
             memcpy(ibuf, &addr, 8);
             ok = DeviceIoControl(hDev, code, ibuf, 8+4, obuf, 8+4, &returned, NULL);
             if (ok) gle = 0; else gle = GetLastError();
             val = 0;
             if (ok && returned >= 4) memcpy(&val, obuf, 4);
-            printf("  %-40s 0x%08X FLATEQ   -> %s  val=0x%08X ret=%d%s\n",
-                   label, code, ok ? "OK" : "FAIL", val, returned,
-                   ok && val ? " *** DATA ***" : "");
+            printf("  0x%08X FLATEQ -> %s  val=0x%08X ret=%d%s\n",
+                   code, ok ? "OK" : "FAIL", val, returned,
+                   (ok && val) ? " *** DATA ***" : "");
         }
         break;
     }
     }
     if (!ok) {
-        printf("  %-40s 0x%08X (fmt=%d) -> FAIL (GLE=%d)\n", label, code, fmt, gle);
+        printf("  0x%08X (fmt%d) -> FAIL (GLE=%d)\n", code, fmt, gle);
     }
 }
 
@@ -104,11 +80,25 @@ void try_device(const char* path, const char* label, DWORD* codes, int n_codes, 
         NULL, OPEN_EXISTING, 0, NULL);
 
     if (hDev == INVALID_HANDLE_VALUE) {
-        printf("  %-50s -> OPEN FAILED (GLE=%d)\n", label, GetLastError());
+        DWORD gle = GetLastError();
+        // Only print failure for first attempt, silently skip others
+        static char last_label[64] = "";
+        if (strcmp(label, last_label) != 0) {
+            printf("%-50s -> GLE=%d", label, gle);
+            switch (gle) {
+                case 2: printf(" (FILE_NOT_FOUND)"); break;
+                case 5: printf(" (ACCESS_DENIED)"); break;
+                case 6: printf(" (INVALID_HANDLE)"); break;
+                case 55: printf(" (DEVICE_NOT_AVAILABLE - try running as Admin)"); break;
+            }
+            printf("\n");
+            strncpy(last_label, label, 63);
+            last_label[63] = 0;
+        }
         return;
     }
 
-    printf("  %-50s -> OPEN OK\n", label);
+    printf("%-50s -> OPEN OK\n", label);
     for (int i = 0; i < n_codes; i++) {
         test_device(hDev, label, codes[i], fmt);
     }
@@ -116,35 +106,43 @@ void try_device(const char* path, const char* label, DWORD* codes, int n_codes, 
 }
 
 int main() {
-    printf("========== Sky Diagnostic: Device + IOCTL Probe ==========\n");
+    printf("========== Sky Diagnostic v3: Device + IOCTL Probe ==========\n");
     printf("(Safe: only known IOCTL codes, no brute-force)\n\n");
 
-    printf("=== RTCore64 (MSI Afterburner) ===\n");
+    printf("=== RTCore64 ===\n");
     DWORD rtc_codes[] = { 0x80002048, 0x80002040, 0x9C40609C, 0x9C40258C, 0x80002000 };
-    try_device("\\\\.\\RTCore64", "RTCore64 (48-byte struct)", rtc_codes, 5, 0);
-    try_device("\\\\.\\RTCore64", "RTCore64 (8-byte in/out)", rtc_codes, 5, 1);
-    try_device("\\\\.\\RTCore64", "RTCore64 (flat buffer)", rtc_codes, 5, 2);
+    try_device("\\\\.\\RTCore64", "RTCore64 (48-byte)", rtc_codes, 5, 0);
+    try_device("\\\\.\\RTCore64", "RTCore64 (8-byte)", rtc_codes, 5, 1);
+    try_device("\\\\.\\RTCore64", "RTCore64 (flat)", rtc_codes, 5, 2);
 
-    printf("\n=== HWiNFO (if installed) ===\n");
+    printf("\n=== HWiNFO (numbered devices 215-200 + generic) ===\n");
     DWORD hwinfo_codes[] = { 0x9C40259C, 0x9C4025A0, 0x9C40609C, 0x9C406094 };
-    try_device("\\\\.\\HWiNFO",   "HWiNFO (8-byte in/out)", hwinfo_codes, 4, 1);
-    try_device("\\\\.\\HWiNFO",   "HWiNFO (flat buffer)",  hwinfo_codes, 4, 2);
-    try_device("\\\\.\\HWiNFO64", "HWiNFO64 (8-byte in/out)", hwinfo_codes, 4, 1);
-    try_device("\\\\.\\HWiNFO64", "HWiNFO64 (flat buffer)",  hwinfo_codes, 4, 2);
-    try_device("\\\\.\\HWiNFO32", "HWiNFO32 (8-byte in/out)", hwinfo_codes, 4, 1);
+    for (int ver = 215; ver >= 200; ver--) {
+        char path[64], label[64];
+        snprintf(path, sizeof(path), "\\\\.\\HWiNFO_%d", ver);
+        snprintf(label, sizeof(label), "HWiNFO_%d", ver);
+        try_device(path, label, hwinfo_codes, 4, 1);
+        snprintf(path, sizeof(path), "\\\\.\\HWiNFO64_%d", ver);
+        snprintf(label, sizeof(label), "HWiNFO64_%d", ver);
+        try_device(path, label, hwinfo_codes, 4, 1);
+    }
+    try_device("\\\\.\\HWiNFO",   "HWiNFO (8-byte)",  hwinfo_codes, 4, 1);
+    try_device("\\\\.\\HWiNFO",   "HWiNFO (flat)",   hwinfo_codes, 4, 2);
+    try_device("\\\\.\\HWiNFO64", "HWiNFO64 (8-byte)", hwinfo_codes, 4, 1);
+    try_device("\\\\.\\HWiNFO64", "HWiNFO64 (flat)",  hwinfo_codes, 4, 2);
+    try_device("\\\\.\\HWiNFO32", "HWiNFO32",          hwinfo_codes, 4, 1);
 
-    printf("\n=== Gigabyte GIO (if available) ===\n");
+    printf("\n=== Other drivers ===\n");
     DWORD gio_codes[] = { 0xC3502002, 0xC3502006, 0x222000, 0x222004 };
-    try_device("\\\\.\\GIO", "GIO (flat buffer)", gio_codes, 4, 2);
-
-    printf("\n=== Other known devices ===\n");
-    // WinRing0 / OpenLibSys
-    try_device("\\\\.\\WinRing0_1_2_0", "WinRing0 (8-byte in/out)", rtc_codes, 2, 1);
-    // AMD Ryzen Master
-    try_device("\\\\.\\RyzenMaster", "RyzenMaster (8-byte in/out)", rtc_codes, 2, 1);
+    try_device("\\\\.\\GIO",  "GIO",     gio_codes, 4, 2);
+    try_device("\\\\.\\WinRing0_1_2_0", "WinRing0",  rtc_codes, 2, 1);
+    try_device("\\\\.\\RyzenMaster",    "RyzenMaster", rtc_codes, 2, 1);
 
     printf("\n============================================\n");
-    printf("Any line with \"*** DATA ***\" means the IOCTL works and returns non-zero data.\n");
+    printf("\nIf RTCore64 GLE=2: restore original RTCore64.sys from .bak then restart Afterburner\n");
+    printf("  copy /y \"D:\\Program Files\\MSI Afterburner\\RTCore64.sys.bak\" \"D:\\Program Files\\MSI Afterburner\\RTCore64.sys\"\n");
+    printf("\nIf HWiNFO all GLE=2: driver not loaded. Check HWiNFO settings have 'Enable Kernel Driver' checked\n");
+    printf("\nAny line with *** DATA *** means the IOCTL works.\n");
     printf("Press Enter to exit...\n");
     getchar();
     return 0;
