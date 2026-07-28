@@ -41,3 +41,11 @@ jobs:
         path: x64/Release/ioctl_finder.exe
         compression-level: 0
         if-no-files-found: warn
+
+    - name: Upload Sky Diag artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sky_diag.exe
+        path: x64/Release/sky_diag.exe
+        compression-level: 0
+        if-no-files-found: warn
