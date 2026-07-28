@@ -58,10 +58,10 @@ void test_device(HANDLE hDev, const char* label, DWORD code, int fmt) {
         break;
     }
     case 1: {  // 8-byte address in, data out
-        uint64_t addr = 0xF0000;
+        DWORD64 addr = 0xF0000;
         ok = DeviceIoControl(hDev, code, &addr, 8, obuf, 0x100, &returned, NULL);
         if (ok) gle = 0; else gle = GetLastError();
-        uint32_t val = 0;
+        DWORD val = 0;
         if (ok && returned >= 4) memcpy(&val, obuf, 4);
         printf("  %-40s 0x%08X 8B-IN    -> %s  val=0x%08X ret=%d%s\n",
                label, code, ok ? "OK" : "FAIL", val, returned,
@@ -69,11 +69,11 @@ void test_device(HANDLE hDev, const char* label, DWORD code, int fmt) {
         break;
     }
     case 2: {  // flat: [8addr+data] combined
-        uint64_t addr = 0xF0000;
+        DWORD64 addr = 0xF0000;
         memcpy(ibuf, &addr, 8);
         ok = DeviceIoControl(hDev, code, ibuf, 8+4, ibuf, 8+0x100, &returned, NULL);
         if (ok) gle = 0; else gle = GetLastError();
-        uint32_t val = 0;
+        DWORD val = 0;
         if (ok && returned > 8) memcpy(&val, ibuf+8, 4);
         printf("  %-40s 0x%08X FLAT     -> %s  val=0x%08X ret=%d%s\n",
                label, code, ok ? "OK" : "FAIL", val, returned,
