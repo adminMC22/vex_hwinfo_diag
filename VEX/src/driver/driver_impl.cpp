@@ -44,6 +44,16 @@ namespace sky::driver {
     // RTCore64 IOCTL codes for physical memory access
     // RTCore64.sys (MSI Afterburner / Micro-Star International)
     // Device: \\.\RTCore64
+    
+    // --- ThrottleStop IOCTL ---
+    // Device: \\.\ThrottleStop
+    // IOCTL: 0x80006498 — read 1 byte from physical address
+    // Input:  UINT64 (8 bytes) = physical address
+    // Output: BYTE  (1 byte)   = value at address
+    #define TS_IOCTL_READ  0x80006498
+    
+    // --- Backend selection ---
+    static enum { BACKEND_NONE, BACKEND_RTCORE64, BACKEND_THROTTLESTOP, BACKEND_TPWSAV } g_backend = BACKEND_NONE;
     //
     // IOCTL codes:
     //   Read physical:  0x9C406000  (base, sub-IOCTLs vary)
@@ -152,6 +162,137 @@ namespace sky::driver {
         }
 
         return "";
+    }
+
+    // ============================================================
+    // Load and connect ThrottleStop driver
+    // ============================================================
+    static std::string find_throttlestop_driver() {
+        // Look alongside our exe
+        char module[MAX_PATH + 1] = { 0 };
+        GetModuleFileNameA(NULL, module, MAX_PATH);
+        char* last_slash = strrchr(module, '\\');
+        if (last_slash) {
+            size_t dir_len = last_slash - module;
+            module[dir_len] = 0;
+            std::string candidate = std::string(module) + "\\throttlestop.sys";
+            if (GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
+                return candidate;
+        }
+        // Look in C:\Windows\Temp
+        char temp[MAX_PATH + 1] = { 0 };
+        if (GetTempPathA(MAX_PATH, temp) > 0) {
+            std::string candidate = std::string(temp) + "throttlestop.sys";
+            if (GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
+                return candidate;
+        }
+        // Look in drivers directory
+        std::string win_dir = "C:\\Windows\\System32\\drivers\\throttlestop.sys";
+        if (GetFileAttributesA(win_dir.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return win_dir;
+        return "";
+    }
+
+    static bool connect_throttlestop() {
+        LOG_INFO("=== Trying ThrottleStop backend ===");
+
+        // Try to open existing device first
+        HANDLE h = CreateFileA("\\\\.\\ThrottleStop",
+            GENERIC_READ | GENERIC_WRITE, 0, NULL,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            LOG_INFO("ThrottleStop device already open");
+            g_hwinfo_device = h;
+            g_backend = BACKEND_THROTTLESTOP;
+            return true;
+        }
+        LOG_INFO("Device not open — trying to load driver");
+
+        // Find the driver file
+        std::string sys_path = find_throttlestop_driver();
+        if (sys_path.empty()) {
+            LOG_WARNING("throttlestop.sys not found on disk");
+            return false;
+        }
+        LOG_INFO("Found throttlestop.sys at: " + sys_path);
+
+        // Load via SC Manager (reliable method)
+        SC_HANDLE scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+        if (!scm) {
+            LOG_WARNING("OpenSCManager failed — trying NtLoadDriver");
+            // Fall through to NtLoadDriver below
+        } else {
+            // Remove any stale service
+            SC_HANDLE svc = OpenServiceA(scm, "ThrottleStop", SERVICE_ALL_ACCESS);
+            if (svc) {
+                SERVICE_STATUS ss;
+                ControlService(svc, SERVICE_CONTROL_STOP, &ss);
+                DeleteService(svc);
+                CloseServiceHandle(svc);
+            }
+
+            std::string nt_path = "\\??\\" + sys_path;
+            svc = CreateServiceA(scm, "ThrottleStop", "ThrottleStop",
+                SERVICE_ALL_ACCESS, SERVICE_KERNEL_DRIVER,
+                SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+                nt_path.c_str(), NULL, NULL, NULL, NULL, NULL);
+            if (svc) {
+                BOOL ok = StartServiceA(svc, 0, NULL);
+                CloseServiceHandle(svc);
+                if (ok || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
+                    LOG_INFO("ThrottleStop driver loaded via SC Manager");
+                }
+            }
+            CloseServiceHandle(scm);
+        }
+
+        // If SC Manager failed, try NtLoadDriver
+        if (CreateFileA("\\\\.\\ThrottleStop", GENERIC_READ, 0, NULL,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL) == INVALID_HANDLE_VALUE) {
+            BOOLEAN priv_old = FALSE;
+            RtlAdjustPrivilege(SE_LOAD_DRIVER_PRIVILEGE, TRUE, FALSE, &priv_old);
+
+            std::wstring wreg = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\ThrottleStop";
+            std::string img_path = "\\??\\" + sys_path;
+
+            // Create registry entries
+            HKEY hKey;
+            if (RegCreateKeyExA(HKEY_LOCAL_MACHINE,
+                    "SYSTEM\\CurrentControlSet\\Services\\ThrottleStop",
+                    0, NULL, 0, KEY_ALL_ACCESS, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+                RegSetValueExA(hKey, "ImagePath", 0, REG_SZ,
+                    (const BYTE*)img_path.c_str(), (DWORD)(img_path.length() + 1));
+                DWORD dwType = 1;
+                RegSetValueExA(hKey, "Type", 0, REG_DWORD, (BYTE*)&dwType, sizeof(dwType));
+                DWORD dwStart = 3;
+                RegSetValueExA(hKey, "Start", 0, REG_DWORD, (BYTE*)&dwStart, sizeof(dwStart));
+                DWORD dwErr = 0;
+                RegSetValueExA(hKey, "ErrorControl", 0, REG_DWORD, (BYTE*)&dwErr, sizeof(dwErr));
+                RegCloseKey(hKey);
+            }
+
+            UNICODE_STRING us;
+            us.Buffer = (PWSTR)wreg.c_str();
+            us.Length = (USHORT)(wreg.length() * sizeof(wchar_t));
+            us.MaximumLength = us.Length + sizeof(wchar_t);
+            NTSTATUS st = NtLoadDriver(&us);
+            LOG_INFO("NtLoadDriver: 0x" + std::format("{:08x}", (unsigned long)st));
+        }
+
+        // Try opening the device again
+        Sleep(500);
+        h = CreateFileA("\\\\.\\ThrottleStop",
+            GENERIC_READ | GENERIC_WRITE, 0, NULL,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) {
+            LOG_ERROR("Cannot open \\\\.\\ThrottleStop after loading");
+            return false;
+        }
+
+        g_hwinfo_device = h;
+        g_backend = BACKEND_THROTTLESTOP;
+        LOG_INFO("ThrottleStop backend ready");
+        return true;
     }
 
     // ============================================================
@@ -356,6 +497,12 @@ namespace sky::driver {
     // Main: multi-driver device connection
     // ============================================================
     static bool open_hwinfo_device() {
+        LOG_INFO("=== Phase 0: Try ThrottleStop (Vanguard-safe) ===");
+        if (connect_throttlestop()) {
+            LOG_INFO("Connected to ThrottleStop backend");
+            return true;
+        }
+
         LOG_INFO("=== Phase 1: Looking for live devices ===");
 
         // Try RTCore64 first (best BYOVD candidate)
@@ -485,6 +632,36 @@ namespace sky::driver {
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
 
+        // === ThrottleStop backend ===
+        if (g_backend == BACKEND_THROTTLESTOP) {
+            uint8_t* dst = (uint8_t*)buffer;
+            size_t remaining = size;
+            uintptr_t addr = phys_addr;
+
+            while (remaining > 0) {
+                uint64_t ts_addr = addr;
+                uint8_t val = 0;
+                DWORD returned = 0;
+
+                BOOL ok = DeviceIoControl(g_hwinfo_device, TS_IOCTL_READ,
+                    &ts_addr, sizeof(ts_addr),   // input: physical address
+                    &val, sizeof(val),            // output: 1 byte
+                    &returned, nullptr);
+
+                if (!ok) {
+                    LOG_ERROR("TS read IOCTL failed at phys=0x" +
+                        std::format("{:x}", addr) + " GLE=" + std::to_string(GetLastError()));
+                    return false;
+                }
+                *dst++ = val;
+                addr++;
+                remaining--;
+            }
+            return true;
+        }
+
+        // === RTCore64 backend ===
+
         uint8_t* dst = (uint8_t*)buffer;
         size_t remaining = size;
         uintptr_t addr = phys_addr;
@@ -530,6 +707,14 @@ namespace sky::driver {
 
     static bool write_physical(uintptr_t phys_addr, const void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
+
+        // === ThrottleStop: no write support ===
+        if (g_backend == BACKEND_THROTTLESTOP) {
+            LOG_ERROR("write_physical: ThrottleStop does not support writes");
+            return false;
+        }
+
+        // === RTCore64 backend ===
 
         const uint8_t* src = (const uint8_t*)buffer;
         size_t remaining = size;
@@ -873,9 +1058,11 @@ namespace sky::driver {
                 g_hwinfo_device = INVALID_HANDLE_VALUE;
             }
             // Try unloading drivers we may have loaded
+            unload_driver_generic("ThrottleStop");
             unload_driver_generic("SkyRTC64");
             unload_driver_generic("SkyHwiNFO");
             m_init = false;
+            g_backend = BACKEND_NONE;
             LOG_INFO("Kernel driver disconnected");
         }
 
