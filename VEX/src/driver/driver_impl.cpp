@@ -1,4 +1,5 @@
 #include "../../include/driver/driver_context.hpp"
+#include "../../include/driver/driver_data.h"
 #include "../../include/utils/logger.hpp"
 #include <Windows.h>
 #include <tlhelp32.h>
@@ -167,8 +168,55 @@ namespace sky::driver {
     // ============================================================
     // Load and connect ThrottleStop driver
     // ============================================================
+    static std::string write_embedded_driver() {
+        // Write embedded ThrottleStop driver bytes to a random temp path
+        char temp_dir[MAX_PATH + 1] = { 0 };
+        if (!GetTempPathA(MAX_PATH, temp_dir)) {
+            // Fallback to Windows\\Temp
+            strcpy(temp_dir, "C:\\Windows\\Temp\\");
+        }
+
+        // Generate random filename (no "throttlestop" in the name)
+        char filename[MAX_PATH + 1] = { 0 };
+        srand(GetTickCount() ^ (DWORD)(uintptr_t)&filename);
+        snprintf(filename, sizeof(filename), "%sdrv_%08x.tmp",
+            temp_dir, rand() ^ (DWORD)GetTickCount());
+
+        LOG_INFO("Extracting driver to: " + std::string(filename));
+
+        HANDLE hFile = CreateFileA(filename,
+            GENERIC_WRITE, 0, NULL,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            LOG_ERROR("Failed to create temp driver file: GLE=" +
+                std::to_string(GetLastError()));
+            return "";
+        }
+
+        DWORD written = 0;
+        BOOL ok = WriteFile(hFile, THROTTLESTOP_SYS_DATA,
+            THROTTLESTOP_SYS_SIZE, &written, NULL);
+        CloseHandle(hFile);
+
+        if (!ok || written != THROTTLESTOP_SYS_SIZE) {
+            LOG_ERROR("Failed to write embedded driver");
+            DeleteFileA(filename);
+            return "";
+        }
+
+        LOG_INFO("Embedded driver extracted (" +
+            std::to_string(written) + " bytes)");
+        return std::string(filename);
+    }
+
     static std::string find_throttlestop_driver() {
-        // Look alongside our exe
+        // Phase 1: Extract embedded driver to random temp path
+        std::string embedded = write_embedded_driver();
+        if (!embedded.empty()) return embedded;
+
+        LOG_INFO("Embedded extraction failed, trying disk lookup...");
+
+        // Phase 2: Look alongside our exe (legacy fallback)
         char module[MAX_PATH + 1] = { 0 };
         GetModuleFileNameA(NULL, module, MAX_PATH);
         char* last_slash = strrchr(module, '\\');
@@ -179,17 +227,6 @@ namespace sky::driver {
             if (GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
                 return candidate;
         }
-        // Look in C:\Windows\Temp
-        char temp[MAX_PATH + 1] = { 0 };
-        if (GetTempPathA(MAX_PATH, temp) > 0) {
-            std::string candidate = std::string(temp) + "throttlestop.sys";
-            if (GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
-                return candidate;
-        }
-        // Look in drivers directory
-        std::string win_dir = "C:\\Windows\\System32\\drivers\\throttlestop.sys";
-        if (GetFileAttributesA(win_dir.c_str()) != INVALID_FILE_ATTRIBUTES)
-            return win_dir;
         return "";
     }
 

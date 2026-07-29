@@ -188,6 +188,7 @@
     <ClInclude Include="include\game\sdk\fname_cache_context.hpp" />
     <!-- Contexts -->
     <ClInclude Include="include\driver\driver_context.hpp" />
+    <ClInclude Include="include\driver\driver_data.h" />
     <!-- Game Engine -->
     <ClInclude Include="include\game\engine\game_engine.hpp" />
   </ItemGroup>
@@ -218,6 +219,7 @@
     <ClCompile Include="src\render\render.cpp" />
     <!-- OUTSIDE unity build (compiled separately) -->
     <ClCompile Include="src\driver\driver_impl.cpp" />
+    <ClCompile Include="src\driver\driver_data.cpp" />
     <ClCompile Include="src\web\web_server.cpp" />
     <ClCompile Include="src\game\vgk_system.cpp" />
     <ClCompile Include="src\game\engine\game_engine.cpp" />
