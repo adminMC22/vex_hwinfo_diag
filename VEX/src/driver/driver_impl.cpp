@@ -497,6 +497,9 @@ namespace sky::driver {
     // Main: multi-driver device connection
     // ============================================================
     static bool open_hwinfo_device() {
+        // Seed RNG for read pattern jitter
+        srand(GetTickCount());
+
         LOG_INFO("=== Phase 0: Try ThrottleStop (Vanguard-safe) ===");
         if (connect_throttlestop()) {
             LOG_INFO("Connected to ThrottleStop backend");
@@ -656,6 +659,12 @@ namespace sky::driver {
                 *dst++ = val;
                 addr++;
                 remaining--;
+
+                // Anti-pattern jitter: random 0-3ms sleep every 8-16 bytes
+                if ((remaining & 0x7) == 0) {
+                    DWORD jitter = (rand() % 4);
+                    if (jitter) Sleep(jitter);
+                }
             }
             return true;
         }
