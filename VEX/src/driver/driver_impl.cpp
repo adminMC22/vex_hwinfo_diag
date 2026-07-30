@@ -42,42 +42,15 @@ extern "C" NTSTATUS NTAPI RtlAdjustPrivilege(ULONG Privilege, BOOLEAN Enable, BO
 
 namespace sky::driver {
 
-    // RTCore64 IOCTL codes for physical memory access
-    // RTCore64.sys (MSI Afterburner / Micro-Star International)
-    // Device: \\.\RTCore64
-    
     // --- ThrottleStop IOCTL ---
     // Device: \\.\ThrottleStop
     // IOCTL: 0x80006498 — read 1 byte from physical address
     // Input:  UINT64 (8 bytes) = physical address
     // Output: BYTE  (1 byte)   = value at address
     #define TS_IOCTL_READ  0x80006498
-    
-    // --- Backend selection ---
-    static enum { BACKEND_NONE, BACKEND_RTCORE64, BACKEND_THROTTLESTOP, BACKEND_TPWSAV } g_backend = BACKEND_NONE;
-    //
-    // IOCTL codes:
-    //   Read physical:  0x9C406000  (base, sub-IOCTLs vary)
-    //   Write physical: 0x9C406004
-    //
-    // The actual protocol uses a structured request:
-    //   Read:  IOCTL = 0x9C406094
-    //   Write: IOCTL = 0x9C4060A0
-    //
-    // Request structure for reads:
-    //   offset 0:  BYTE  padding[8]  (unused)
-    //   offset 8:  DWORD physical_address_low
-    //   offset 12: DWORD physical_address_high
-    //   offset 16: DWORD size
-    //   offset 20: BYTE  output[buffer]
-    //
-    // For writes, the input buffer contains the address + data.
 
-    // RTCore64 uses these IOCTLs:
-    // 0x9C40609C - Read physical memory (Method::Buffered)
-    // 0x9C4060A0 - Write physical memory (Method::Buffered)
-    //
-    // Actually, RTCore64 uses a simple structure:
+    // --- Backend selection ---
+    static enum { BACKEND_NONE, BACKEND_THROTTLESTOP } g_backend = BACKEND_NONE;
     // struct RTCPhysMem {
     //     UINT64 phys_address;  // Physical address to read/write
     //     UINT32 size;          // Size in bytes
@@ -566,47 +539,8 @@ namespace sky::driver {
     // ============================================================
     //
     // IOCTL codes:
-    //   0x80002048 — Read physical memory
-    //   0x8000204c — Write physical memory
-    //   0x80002030 — Read MSR
-    //   0x80002034 — Write MSR
-    //
-    // CTL_CODE breakdown for 0x80002048:
-    //   DeviceType = 0x8000 (FILE_DEVICE_UNKNOWN)
-    //   Access     = 0 (FILE_ANY_ACCESS)
-    //   Function   = 0x812 (0x80002048 >> 2) & 0xFFF
-    //   Method     = 0 (METHOD_BUFFERED)
-    //
-    // Protocol (48-byte struct, METHOD_BUFFERED, same buffer for in/out):
-    //   Bytes  0-7:   Pad0     (reserved, zero)
-    //   Bytes  8-15:  Address  (physical address to read/write)
-    //   Bytes 16-23:  Pad1     (reserved, zero)
-    //   Bytes 24-27:  Size     (1, 2, or 4 — max 4 bytes per call!)
-    //   Bytes 28-31:  Value    (read result, or write data)
-    //   Bytes 32-47:  Pad2     (reserved, zero)
-    //   Total: 48 bytes
-    //
-    // CRITICAL: Read size is limited to 4 bytes per call.
-    // For larger reads, loop 4 bytes at a time.
-
-    #pragma pack(push, 1)  // Ensure exact 48-byte layout matches driver expectations
-    struct RTCoreRequest {
-        uint8_t  pad0[8];    // 0-7
-        uint64_t address;    // 8-15
-        uint8_t  pad1[8];    // 16-23
-        uint32_t size;       // 24-27. Must be 1, 2, or 4
-        uint32_t value;      // 28-31. Output: read data. Input: write data.
-        uint8_t  pad2[16];   // 32-47
-    };
-    #pragma pack(pop)
-    static_assert(sizeof(RTCoreRequest) == 48, "RTCoreRequest must be 48 bytes");
-
-    #define RTC_IOCTL_READ  0x80002048
-    #define RTC_IOCTL_WRITE 0x8000204C
-    #define RTC_IOCTL_READ_ALT  0x9C40258C  // fallback
-
-    static DWORD s_ioctl_read = RTC_IOCTL_READ;
-    static DWORD s_ioctl_write = RTC_IOCTL_WRITE;
+    // #define THROTTLE_IOCTL CTL_CODE(FILE_DEVICE_UNKNOWN, 0x6498, METHOD_BUFFERED, FILE_READ_ACCESS)
+    #define TS_IOCTL_READ 0x80006498
 
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
@@ -645,49 +579,9 @@ namespace sky::driver {
             return true;
         }
 
-        // === RTCore64 backend ===
-
-        uint8_t* dst = (uint8_t*)buffer;
-        size_t remaining = size;
-        uintptr_t addr = phys_addr;
-
-        while (remaining > 0) {
-            // Read up to 4 bytes at a time
-            uint32_t chunk = (remaining >= 4) ? 4 : (uint32_t)remaining;
-
-            RTCoreRequest req = {};
-            req.address = addr;
-            req.size = chunk;  // 1, 2, or 4
-
-            DWORD returned = 0;
-            BOOL ok = DeviceIoControl(g_hwinfo_device, s_ioctl_read,
-                &req, sizeof(req),      // input: 48 bytes
-                &req, sizeof(req),      // output: same buffer
-                &returned, nullptr);
-
-            if (!ok) {
-                // Try alternate IOCTL code
-                ok = DeviceIoControl(g_hwinfo_device, RTC_IOCTL_READ_ALT,
-                    &req, sizeof(req),
-                    &req, sizeof(req),
-                    &returned, nullptr);
-            }
-
-            if (!ok) {
-                LOG_ERROR("read_physical: IOCTL failed at phys=0x" +
-                    std::format("{:x}", addr) + " GLE=" + std::to_string(GetLastError()));
-                return false;
-            }
-
-            // Copy result
-            memcpy(dst, &req.value, chunk);
-
-            addr += chunk;
-            dst += chunk;
-            remaining -= chunk;
-        }
-
-        return true;
+        g_backend = BACKEND_NONE;
+        LOG_ERROR("read_physical: no supported backend");
+        return false;
     }
 
     static bool write_physical(uintptr_t phys_addr, const void* buffer, size_t size) {
@@ -930,110 +824,6 @@ namespace sky::driver {
             m_init = true;
             LOG_INFO("Kernel driver connected");
 
-            // Verify physical read IOCTL works
-            // Probe multiple IOCTL codes and formats
-            {
-                struct RTCoreProbe {
-                    DWORD code;
-                    DWORD buf_size;
-                    const char* desc;
-                };
-
-                RTCoreProbe probes[] = {
-                    // Correct CVE-2019-16098 format (48-byte struct)
-                    { 0x80002048, 48, "0x80002048 48-byte struct" },
-                    { 0x8000204C, 48, "0x8000204C 48-byte struct" },
-                    // Alternative smaller sizes
-                    { 0x80002048, 24, "0x80002048 24-byte" },
-                    { 0x80002048, 28, "0x80002048 28-byte" },
-                    { 0x80002048, 32, "0x80002048 32-byte" },
-                    { 0x80002048, 64, "0x80002048 64-byte" },
-                    // Alternative IOCTL codes from known PoCs
-                    { 0x80002040, 48, "0x80002040 48-byte" },
-                    { 0x80002040, 16, "0x80002040 16-byte" },
-                    { 0x80002044, 48, "0x80002044 48-byte" },
-                    // METHOD_NEITHER variants (method=3)
-                    { 0x8000204B, 48, "0x8000204B (NEITHER) 48-byte" },
-                    { 0x8000204F, 48, "0x8000204F (NEITHER) 48-byte" },
-                };
-
-                for (const auto& p : probes) {
-                    uint8_t buf[128] = {};
-
-                    // For IOCTL codes tested with full 48-byte struct
-                    if (p.buf_size >= 48) {
-                        RTCoreRequest* req = (RTCoreRequest*)buf;
-                        req->address = 0xF0000;
-                        req->size = 4;
-                    } else if (p.buf_size >= 16) {
-                        // Legacy format: [8 pad][8 addr]
-                        *(uint64_t*)(buf + 8) = 0xF0000;
-                    }
-
-                    DWORD returned = 0;
-                    BOOL ok = DeviceIoControl(g_hwinfo_device, p.code,
-                        buf, p.buf_size,
-                        buf, p.buf_size,
-                        &returned, nullptr);
-
-                    if (ok) {
-                        uint32_t val = 0;
-                        if (p.buf_size >= 48) {
-                            val = ((RTCoreRequest*)buf)->value;
-                        } else if (returned > 16) {
-                            memcpy(&val, buf + 16, 4);
-                        }
-                        LOG_INFO("IOCTL probe OK: " + std::string(p.desc) +
-                            " val=0x" + std::format("{:08x}", val) +
-                            " ret=" + std::to_string(returned));
-                    } else {
-                        DWORD gle = GetLastError();
-                        if (gle != 87) {
-                            LOG_INFO("IOCTL probe " + std::string(p.desc) +
-                                " failed GLE=" + std::to_string(gle));
-                        }
-                        // GLE=87 is expected for most — don't spam on those
-                    }
-                }
-
-                // Also try simpler: just 8-byte addr input, 0x1000 output
-                {
-                    uint64_t addr = 0xF0000;
-                    uint8_t out[0x100] = {};
-                    DWORD returned = 0;
-                    BOOL ok = DeviceIoControl(g_hwinfo_device, 0x80002048,
-                        &addr, sizeof(addr),
-                        out, sizeof(out),
-                        &returned, nullptr);
-                    if (ok) {
-                        LOG_INFO("IOCTL probe OK: 0x80002048 8-byte-in/0x100-out");
-                    } else {
-                        DWORD gle = GetLastError();
-                        LOG_INFO("IOCTL probe: 0x80002048 8-byte-in GLE=" +
-                            std::to_string(gle));
-                    }
-                }
-
-                // Fallback: try with 48-byte struct but ALSO include addr in output
-                // by passing input_size larger than output_size (some drivers check
-                // outLen matches inLen explicitly)
-                {
-                    uint8_t buf[48] = {};
-                    ((RTCoreRequest*)buf)->address = 0xF0000;
-                    ((RTCoreRequest*)buf)->size = 4;
-                    DWORD returned = 0;
-                    BOOL ok = DeviceIoControl(g_hwinfo_device, 0x80002048,
-                        buf, 48,
-                        buf, 48,
-                        &returned, nullptr);
-                    if (ok) {
-                        uint32_t val = ((RTCoreRequest*)buf)->value;
-                        LOG_INFO("IOCTL probe OK: 0x80002048 48-equal-buf val=0x" +
-                            std::format("{:08x}", val));
-                    }
-                }
-            }
-
             return true;
         }
 
@@ -1042,10 +832,8 @@ namespace sky::driver {
                 CloseHandle(g_hwinfo_device);
                 g_hwinfo_device = INVALID_HANDLE_VALUE;
             }
-            // Try unloading drivers we may have loaded
+            // Try unloading ThrottleStop service
             unload_driver_generic("ThrottleStop");
-            unload_driver_generic("SkyRTC64");
-            unload_driver_generic("SkyHwiNFO");
             m_init = false;
             g_backend = BACKEND_NONE;
             LOG_INFO("Kernel driver disconnected");
