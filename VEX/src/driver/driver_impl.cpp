@@ -647,116 +647,87 @@ namespace sky::driver {
             }
         }
         if (s_kernel_vbase == 0) return false;
+        LOG_INFO("kernel_phys_offset: using heuristic to find kernel physical base...");
 
-        // Scan physical memory for the PE signature (MZ)
-        // On VBS systems, ntoskrnl pages are hypervisor-protected and invisible
-        // to MmMapIoSpace. Instead, find any kernel module (like vgk.sys) that
-        // doesn't have per-page VBS protection, and use that to derive the offset.
-        MEMORYSTATUSEX mem = { sizeof(MEMORYSTATUSEX) };
-        GlobalMemoryStatusEx(&mem);
-        uint64_t total_phys = mem.ullTotalPhys;
-        if (total_phys < 0x20000000ULL) total_phys = 0x20000000ULL;
-        if (total_phys > 0x200000000ULL) total_phys = 0x200000000ULL;
-        LOG_INFO("kernel scan: scanning " + std::to_string(total_phys >> 30) +
-            "GB for any kernel module (RAM: " + std::to_string(total_phys >> 20) + " MB)...");
+        // === Heuristic approach: no brute-force physical scan ===
+        // On Win10 x64, kernel physical is typically one of these offsets from virtual:
+        //   phys = virt - 0xFFFFF78000000000   (common on 22H2+ non-VBS)
+        //   phys = virt - 0xFFFFF80000000000   (pre-2020 builds)
+        //   phys = virt - 0xFFFFF78000000000 + 0x80000 (slight variation)
+        //
+        // If the heuristic fails, fall back to a LIMITED scan around the
+        // expected area (128 MB range at 2 MB granularity = 64 IOCTLs).
 
-        // Save kernel module list for candidate matching
-        struct ModuleEntry { uintptr_t image_base; uint32_t image_size; std::string name; };
-        std::vector<ModuleEntry> module_list;
-        {
-            ULONG msize = 0;
-            NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, NULL, 0, &msize);
-            if (msize > 0) {
-                std::vector<uint8_t> mbuf(msize);
-                if (NT_SUCCESS(NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, mbuf.data(), msize, &msize))) {
-                    auto m = (PSYSTEM_MODULE_INFORMATION)mbuf.data();
-                    for (ULONG i = 0; i < m->Count; ++i) {
-                        auto& mod = m->Module[i];
-                        std::string n((char*)mod.FullPathName + mod.OffsetToFileName);
-                        module_list.push_back({ (uintptr_t)mod.ImageBase, mod.ImageSize, n });
+        static const int64_t k_heuristic_tweaks[] = {
+            0,                  // baseline: virt - 0xFFFFF78000000000
+            -0x100000,          // -1MB
+            0x100000,           // +1MB
+            -0x80000,           // -512KB
+            0x80000,            // +512KB
+        };
+        static const uint64_t k_base_deduction = 0xFFFFF78000000000ULL;
+
+        uint8_t verify[2];
+        bool found = false;
+
+        // Try heuristic offsets first (fast)
+        for (int64_t tweak : k_heuristic_tweaks) {
+            uintptr_t guess = (uintptr_t)((int64_t)(s_kernel_vbase - k_base_deduction) + tweak);
+            if (read_physical(guess, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
+                // Confirm with PE signature at offset 0x3C
+                uint32_t pe_off = 0;
+                if (read_physical(guess + 0x3C, &pe_off, sizeof(pe_off)) &&
+                    pe_off < 0x1000) {
+                    uint32_t pe_sig = 0;
+                    if (read_physical(guess + pe_off, &pe_sig, sizeof(pe_sig)) &&
+                        (pe_sig & 0xFFFF) == 0x4550) { // "PE" little-endian
+                        s_kernel_pbase = guess;
+                        found = true;
+                        LOG_INFO("kernel_phys_offset: found via heuristic at phys=0x" +
+                            std::format("{:x}", s_kernel_pbase));
+                        break;
                     }
                 }
             }
         }
-        LOG_INFO("kernel scan: " + std::to_string(module_list.size()) + " modules loaded");
 
-        uint8_t page[0x1000];
-        constexpr uintptr_t STEP = 0x10000; // 64KB step (catches any 4KB-aligned module)
-        uint64_t next_progress = 0x100000000ULL;
-        for (uint64_t pa = 0; pa < total_phys; pa += STEP) {
-            if (pa >= next_progress) {
-                LOG_INFO("kernel scan: scanned " + std::to_string(pa >> 30) + "GB...");
-                next_progress += 0x100000000ULL;
-            }
-
-            // PHASE 1: Fast MZ check (4 bytes only — avoids 1024 IOCTL calls per page)
-            uint32_t quick_sig = 0;
-            if (!read_physical((uintptr_t)pa, &quick_sig, sizeof(quick_sig))) continue;
-            // MZ = 0x4D5A (little-endian). In a uint32_t: first 2 bytes are 'M','Z'
-            if ((quick_sig & 0xFFFF) != 0x5A4D) continue;
-            // PE signature at offset 0x3C points to 'PE\0\0' which is 0x00004550
-            // We need to read 4 more bytes at offset 0x3C to get the pointer,
-            // then read 4 bytes at that pointer for 'PE\0\0'
-            // For now, just read the full page — only for MZ hits (rare)
-            if (!read_physical((uintptr_t)pa, page, 0x1000)) continue;
-
-            uint32_t pe_off;
-            memcpy(&pe_off, page + 0x3C, sizeof(pe_off));
-            if (pe_off > 0x1000 - 4) continue;
-            if (page[pe_off] != 'P' || page[pe_off + 1] != 'E') continue;
-
-            // Read SizeOfImage (4 bytes at PE+24+56=PE+0x50 for PE32+)
-            uint32_t size_of_image = 0;
-            memcpy(&size_of_image, page + pe_off + 0x50, sizeof(size_of_image));
-
-            // Check if this PE's size matches any known kernel module
-            for (const auto& mod : module_list) {
-                if (size_of_image == mod.image_size) {
-                    // Found a size match — read ImageBase from this PE to verify
-                    uintptr_t pe_image_base = 0;
-                    memcpy(&pe_image_base, page + pe_off + 0x30, sizeof(uintptr_t));
-                    // The PE header's ImageBase is the STATIC build-time base
-                    // KASLR loads at a different virtual address. The module
-                    // list gives us the KASLR-randomized address. The difference
-                    // between the module's actual virtual base and this PE's
-                    // static ImageBase gives us the KASLR displacement.
-                    // This displacement must be the same for all kernel modules
-                    // in the same PML4 region.
-                    int64_t kaslr_disp = (int64_t)mod.image_base - (int64_t)pe_image_base;
-
-                    LOG_INFO("kernel scan: found " + mod.name +
-                        " at phys=0x" + std::format("{:x}", pa) +
-                        " (size=0x" + std::format("{:x}", size_of_image) +
-                        ", virt=0x" + std::format("{:x}", mod.image_base) +
-                        ", KASLR disp=0x" + std::format("{:x}", kaslr_disp) + ")");
-
-                    // Calculate kernel offset: offset = phys - virt_actual
-                    // virt_actual = static_image_base + kaslr_disp
-                    // So: offset = phys - (static_image_base + kaslr_disp)
-                    //                  = phys - mod.image_base
-                    int64_t offset = (int64_t)pa - (int64_t)mod.image_base;
-                    s_kernel_pbase = (uintptr_t)((int64_t)s_kernel_vbase + offset);
-                    LOG_INFO("kernel scan: derived ntoskrnl phys=0x" +
-                        std::format("{:x}", s_kernel_pbase));
-                    break;
+        // Fallback: limited 2MB-granularity scan around the virtual address (max 64 tries)
+        if (!found) {
+            LOG_INFO("kernel_phys_offset: heuristic miss, scanning limited range...");
+            // Kernel is usually within 64MB of virt - 0xFFFFF78000000000
+            uintptr_t base_guess = (uintptr_t)((int64_t)(s_kernel_vbase - k_base_deduction));
+            uintptr_t scan_start = (base_guess & ~0x1FFFFFULL); // 2MB align
+            for (uintptr_t pa = scan_start; pa < scan_start + 0x4000000; pa += 0x200000) {
+                if (read_physical(pa, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
+                    uint32_t pe_off = 0;
+                    if (read_physical(pa + 0x3C, &pe_off, sizeof(pe_off)) &&
+                        pe_off < 0x1000) {
+                        uint32_t pe_sig = 0;
+                        if (read_physical(pa + pe_off, &pe_sig, sizeof(pe_sig)) &&
+                            (pe_sig & 0xFFFF) == 0x4550) {
+                            s_kernel_pbase = pa;
+                            found = true;
+                            LOG_INFO("kernel_phys_offset: found via scan at phys=0x" +
+                                std::format("{:x}", s_kernel_pbase));
+                            break;
+                        }
+                    }
                 }
             }
-            if (s_kernel_pbase != 0) break;
         }
 
-        if (s_kernel_pbase == 0) {
-            LOG_WARNING("kernel scan: no kernel modules found in physical memory");
+        if (!found) {
+            LOG_WARNING("kernel_phys_offset: could not locate kernel in physical memory");
             LOG_WARNING("kernel scan: not found");
             return false;
         }
 
         LOG_INFO("ntoskrnl physical: 0x" + std::format("{:x}", s_kernel_pbase));
 
-        // Verify the derived physical address by reading it and checking for MZ
-        uint8_t verify[2];
+        // Final verification
         if (read_physical(s_kernel_pbase, verify, 2)) {
             if (verify[0] == 'M' && verify[1] == 'Z') {
-                LOG_INFO("ntoskrnl verification: MZ signature confirmed at derived physical");
+                LOG_INFO("ntoskrnl verification: MZ signature confirmed");
             } else {
                 LOG_WARNING("ntoskrnl verification: no MZ at derived physical (got 0x" +
                     std::format("{:02x}{:02x}", verify[1], verify[0]) + ")");
