@@ -45,27 +45,27 @@ public:
 		float content_alpha = 0.f;
 
 		int section_count = 0;
-		const char* section_icons[3] = { "A", "B", "E" };
+		const char* section_icons[2] = { "E", "S" };
 
 		bool favorite_childs = false;
 		std::map<ImGuiID, bool> child_states;
 
-		std::string cheat_name = "realunk.com";
-		std::string cheat_year = "2024-2025@";
+		std::string cheat_name = "lunar";
+		std::string cheat_year = "2026";
 
 		ID3D11ShaderResourceView* logo_resource = nullptr;
 	} gui;
 
 	struct {
 		struct {
-			bool enabled = true;
-			bool draw_fov = true;
-			int bone = 0;
-			int mode = 0;
-			int key = VK_RBUTTON;
-			float fov = 20.f;
-			int recoil = 1;
-			int smooth = 5;
+		    bool enabled = false;
+		    bool draw_fov = true;
+		    int bone = 0;
+		    int mode = 0;
+		    int key = VK_RBUTTON;
+		    float fov = 20.f;
+		    int recoil = 1;
+		    int smooth = 5;
 		} aimbot;
 
 		struct {
@@ -88,7 +88,7 @@ public:
 			bool visible_check = true;
 			bool spike = true;
 			float not_visible_color[4] = { 1.f, 0.0f, 0.0f, 1.f };
-			float visible_color[4] = { 1.0f, 1.f, 1.0f, 1.f };
+			float visible_color[4] = { 0.4f, 0.7f, 1.0f, 1.f };
 
 			bool skills = true;
 			bool skills_name = true;

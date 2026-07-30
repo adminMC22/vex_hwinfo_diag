@@ -94,75 +94,13 @@ void c_gui::render()
 				{
 					gui->begin_group();
 					{
-						gui->begin_child(xorstr_("Aimbot"), xorstr_("B"));
-						{
-							static keybind_state aim_state = { 0, var->config.aimbot.key, 0 };
-							if(gui->checkbox_with_key(xorstr_("Enabled"), &var->config.aimbot.enabled, &aim_state)) {
-								notify->add_notify(std::format("AIMBOT {}", var->config.esp.enabled ? "ENABLED" : "DISABLED"), !var->config.aimbot.enabled);
-							}
-							var->config.aimbot.key = aim_state.key;
-
-							const char* target_modes[2] = { xorstr_("Target"), xorstr_("Nearest") };
-							static int target_mode = 0;
-							gui->dropdown(xorstr_("Aim Mode"), &target_mode, target_modes, IM_ARRAYSIZE(target_modes));
-							var->config.aimbot.mode = target_mode;
-							if (!target_mode) {
-								const char* bones[3] = { xorstr_("Head"), xorstr_("Neck"), xorstr_("Chest") };
-								static int bone = 0;
-								gui->dropdown(xorstr_("Target Bone"), &bone, bones, IM_ARRAYSIZE(bones));
-								var->config.aimbot.bone = bone;
-							}
-
-							gui->checkbox(xorstr_("Draw FOV"), &var->config.aimbot.draw_fov);
-
-							gui->slider_float(xorstr_("Fov"), &var->config.aimbot.fov, 0.f, 500.f, "%.2f");
-
-							gui->slider_int(xorstr_("Smooth"), &var->config.aimbot.smooth, 0.f, 50.f);
-
-							gui->slider_int(xorstr_("Recoil"), &var->config.aimbot.recoil, 0.f, 10.f);
-						}
-						gui->end_child();
-					}
-					gui->end_group();
-
-					gui->sameline();
-
-					gui->begin_group();
-					{
-						gui->begin_child(xorstr_("Triggerbot"), xorstr_("A"));
-						{
-							static keybind_state aim_state = { 0, var->config.triggerbot.key, 0 };
-							gui->checkbox_with_key(xorstr_("Enabled"), &var->config.triggerbot.enabled, &aim_state);
-							var->config.triggerbot.key = aim_state.key;
-
-							gui->slider_int(xorstr_("Delay shot"), &var->config.triggerbot.delay_shot, 0, 10000);
-
-							const char* target_modes[2] = { xorstr_("Target"), xorstr_("Nearest") };
-							static int target_mode = 0;
-							gui->dropdown(xorstr_("Trigger Mode"), &target_mode, target_modes, IM_ARRAYSIZE(target_modes));
-							var->config.triggerbot.mode = target_mode;
-							if (!target_mode) {
-								const char* bones[3] = { xorstr_("Head"), xorstr_("Neck"), xorstr_("Chest") };
-								static int bone = 0;
-								gui->dropdown(xorstr_("Target Bone"), &bone, bones, IM_ARRAYSIZE(bones));
-								var->config.triggerbot.bone = bone;
-							}
-						}
-						gui->end_child();
-					}
-					gui->end_group();
-				}
-				else if (active_tab == 1)
-				{
-					gui->begin_group();
-					{
 						gui->begin_child(xorstr_("Players"), xorstr_("F"));
 						{
 							static float enabled_col[4] = { 0.4f, 1.f, 0.65f, 1.f };
 							static bool enabled = true;
 
 							if (gui->checkbox(xorstr_("Enabled"), &var->config.esp.enabled)) {
-								notify->add_notify(std::format("ESP {}", var->config.esp.enabled ? "ENABLED" : "DISABLED"), !var->config.esp.enabled);
+								notify->add_notify(std::format("ESP {0}", var->config.esp.enabled ? "ENABLED" : "DISABLED"), !var->config.esp.enabled);
 							}
 
 							gui->checkbox_with_color(xorstr_("Visible check"), &var->config.esp.visible_check, var->config.esp.visible_color, var->config.esp.not_visible_color, true);
@@ -173,7 +111,6 @@ void c_gui::render()
 							gui->checkbox(xorstr_("Head"), &var->config.esp.head);
 							gui->checkbox(xorstr_("Health"), &var->config.esp.health);
 							gui->checkbox(xorstr_("Distance"), &var->config.esp.distance);
-							
 						}
 						gui->end_child();
 					}
@@ -186,7 +123,6 @@ void c_gui::render()
 						gui->begin_child(xorstr_("Skills"), xorstr_("I"));
 						{
 							gui->checkbox_with_color(xorstr_("Skills"), &var->config.esp.skills, &var->config.esp.skills_color, true);
-
 							gui->checkbox(xorstr_("Name"), &var->config.esp.skills_name);
 							gui->checkbox(xorstr_("Distance"), &var->config.esp.skills_distance);
 						}
@@ -202,7 +138,7 @@ void c_gui::render()
 					}
 					gui->end_group();
 				}
-				else if (active_tab == 2)
+				else if (active_tab == 1)
 				{
 					gui->begin_group();
 					{
@@ -217,18 +153,7 @@ void c_gui::render()
 						gui->end_child();
 					}
 					gui->end_group();
-
-					gui->sameline();
-
-					gui->begin_group();
-					{
-						gui->begin_child(xorstr_("Credits"), xorstr_("M"));
-						{
-							gui->text_field(xorstr_("Coder"), xorstr_("Mockerz"), 9);
-						}
-						gui->end_child();
-					}
-					gui->end_group();
+				}
 				}
 				gui->pop_style_var();
 			}
@@ -246,5 +171,5 @@ void c_gui::render()
 	}
 	gui->end();
 
-	draw->watermark("U N K N O W N C H E A T S");
+	draw->watermark("lunar v1.0");
 }
