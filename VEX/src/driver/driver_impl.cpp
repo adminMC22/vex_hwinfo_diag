@@ -537,79 +537,18 @@ namespace sky::driver {
         // Seed RNG for read pattern jitter
         srand(GetTickCount());
 
-        LOG_INFO("=== Phase 0: Try ThrottleStop (Vanguard-safe) ===");
+        LOG_INFO("=== ThrottleStop only (no fallback drivers) ===");
         if (connect_throttlestop()) {
             LOG_INFO("Connected to ThrottleStop backend");
             return true;
         }
 
-        LOG_INFO("=== Phase 1: Looking for live devices ===");
-
-        // Try RTCore64 first (best BYOVD candidate)
-        LOG_INFO("Trying RTCore64...");
-        if (find_and_open_device("RTCore")) {
-            LOG_INFO("Connected to RTCore64 device");
-            return true;
-        }
-
-        // Try GIO/gdrv (Gigabyte)
-        LOG_INFO("Trying GIO/gdrv...");
-        if (find_and_open_device("GIO")) {
-            LOG_INFO("Connected to GIO/gdrv device");
-            return true;
-        }
-
-        // Try HWiNFO (may fail due to DACL)
-        LOG_INFO("Trying HWiNFO...");
-        if (find_and_open_device("HWiNFO")) {
-            LOG_INFO("Connected to HWiNFO device");
-            return true;
-        }
-
-        // Phase 2: No device found. Try loading drivers ourselves.
-        LOG_INFO("=== Phase 2: Loading driver ourselves ===");
-
-        // Try RTCore64.sys
-        std::string rtc = find_rtcore_driver();
-        if (!rtc.empty()) {
-            LOG_INFO("Found RTCore64.sys: " + rtc);
-            if (load_driver_generic(rtc, "SkyRTC64")) {
-                Sleep(500);
-                if (find_and_open_device("RTCore")) {
-                    LOG_INFO("Connected to RTCore64 after loading");
-                    return true;
-                }
-                unload_driver_generic("SkyRTC64");
-            }
-        }
-
-        // Try HWiNFO driver as fallback
-        std::string hwinfo = find_hwinfo_driver();
-        if (!hwinfo.empty()) {
-            LOG_INFO("Found HWiNFO driver: " + hwinfo);
-            if (load_driver_generic(hwinfo, "SkyHwiNFO")) {
-                Sleep(500);
-                if (find_and_open_device("HWiNFO")) {
-                    LOG_INFO("Connected to HWiNFO after loading");
-                    return true;
-                }
-                unload_driver_generic("SkyHwiNFO");
-            }
-        }
-
-        // Phase 3: Nothing worked
-        std::string msg = "Could not connect to any kernel driver.\n\n";
-        msg += "Tried:\n";
-        msg += "  RTCore64 (MSI Afterburner) - device + driver load\n";
-        msg += "  GIO/gdrv (Gigabyte) - device only\n";
-        msg += "  HWiNFO - device + driver load\n\n";
-        msg += "To fix:\n";
-        msg += "1. Install MSI Afterburner (puts RTCore64.sys on disk)\n";
-        msg += "   Then run Sky.exe as Admin\n";
-        msg += "2. OR run HWiNFO64 as Admin first\n";
-        msg += "3. OR put RTCore64.sys in C:\\Windows\\Temp\\\n";
-        MessageBoxA(0, msg.c_str(), "Sky - No Driver Available",
-            MB_OK | MB_ICONERROR);
+        // ThrottleStop only — no RTCore, no HWiNFO, no GIO fallbacks.
+        // Those drivers are easily detected by Vanguard and increase risk.
+        LOG_ERROR("ThrottleStop driver not available — cannot proceed");
+        LOG_ERROR("Place throttlestop.sys in Temp/ or run with driver pre-loaded");
+        g_backend = BACKEND_NONE;
+        g_hwinfo_device = INVALID_HANDLE_VALUE;
         return false;
     }
 
