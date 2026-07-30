@@ -55,12 +55,12 @@ namespace sky::render {
             wc.style = CS_HREDRAW | CS_VREDRAW;
             wc.lpfnWndProc = DefWindowProcA;
             wc.hInstance = GetModuleHandleA(nullptr);
-            wc.lpszClassName = xorstr_("SkyOverlay");
+            wc.lpszClassName = xorstr_("Windows.UI.Core.CoreWindow");
             RegisterClassExA(&wc);
 
             hWnd = CreateWindowExA(
                 WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
-                xorstr_("SkyOverlay"), xorstr_("Sky"),
+                xorstr_("Windows.UI.Core.CoreWindow"), xorstr_("Windows.UI.Core.CoreWindow"),
                 WS_POPUP,
                 0, 0, (int)Width, (int)Height,
                 nullptr, nullptr, wc.hInstance, nullptr

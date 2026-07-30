@@ -9,23 +9,19 @@
 #include "src/core/application.cpp"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
-    // Enable console for diagnostics
-    AllocConsole();
-    freopen("CONOUT$", "w", stdout);
-    freopen("CONIN$", "r", stdin);
-    freopen("CONOUT$", "w", stderr);
-    SetConsoleTitleA("Sky");
+    // Console disabled for opsec — no console window
+    // AllocConsole removed intentionally
 
-    sky::utils::initialize_logger(sky::utils::LogLevel::DEBUG);
+    sky::utils::initialize_logger(sky::utils::LogLevel::WARNING);
 
-    LOG_INFO("=== Sky Starting (GUI Overlay Mode) ===");
+    LOG_INFO("=== Starting (GUI Overlay Mode) ===");
 
     try {
         // Create the application (drivers + graphics + game engine)
         auto app = sky::core::create_application();
         if (!app) {
             LOG_ERROR("Failed to create application");
-            MessageBoxA(nullptr, "Failed to create application.", "Sky", MB_OK | MB_ICONERROR);
+            MessageBoxA(nullptr, "Failed to create application.", "Runtime Error", MB_OK | MB_ICONERROR);
             return -1;
         }
 
@@ -36,7 +32,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 "Check console for details.\n"
                 "Make sure throttlestop.sys is next to this EXE.\n"
                 "Run as Administrator.",
-                "Sky", MB_OK | MB_ICONERROR);
+                "Runtime Error", MB_OK | MB_ICONERROR);
             return -1;
         }
 
@@ -44,12 +40,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         app->run();
 
         // Cleanup
-        LOG_INFO("Sky shutting down");
+        LOG_INFO("Shutting down");
         return 0;
     }
     catch (const std::exception& e) {
         LOG_ERROR(std::string("Exception: ") + e.what());
-        MessageBoxA(nullptr, e.what(), "Sky Error", MB_OK | MB_ICONERROR);
+        MessageBoxA(nullptr, e.what(), "Runtime Error", MB_OK | MB_ICONERROR);
         return -1;
     }
     catch (...) {
