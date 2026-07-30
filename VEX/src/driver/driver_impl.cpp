@@ -587,42 +587,9 @@ namespace sky::driver {
     static bool write_physical(uintptr_t phys_addr, const void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
 
-        // === ThrottleStop: no write support ===
-        if (g_backend == BACKEND_THROTTLESTOP) {
-            LOG_ERROR("write_physical: ThrottleStop does not support writes");
-            return false;
-        }
-
-        // === RTCore64 backend ===
-
-        const uint8_t* src = (const uint8_t*)buffer;
-        size_t remaining = size;
-        uintptr_t addr = phys_addr;
-
-        while (remaining > 0) {
-            uint32_t chunk = (remaining >= 4) ? 4 : (uint32_t)remaining;
-
-            RTCoreRequest req = {};
-            req.address = addr;
-            req.size = chunk;
-            memcpy(&req.value, src, chunk);  // write data
-
-            DWORD returned = 0;
-            if (!DeviceIoControl(g_hwinfo_device, s_ioctl_write,
-                    &req, sizeof(req),
-                    &req, sizeof(req),
-                    &returned, nullptr)) {
-                LOG_ERROR("write_physical: IOCTL failed at phys=0x" +
-                    std::format("{:x}", addr) + " GLE=" + std::to_string(GetLastError()));
-                return false;
-            }
-
-            addr += chunk;
-            src += chunk;
-            remaining -= chunk;
-        }
-
-        return true;
+        // ThrottleStop: no write support
+        LOG_ERROR("write_physical not supported by ThrottleStop");
+        return false;
     }
 
     // ============================================================
