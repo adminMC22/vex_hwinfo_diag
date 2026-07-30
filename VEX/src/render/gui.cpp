@@ -154,7 +154,6 @@ void c_gui::render()
 					}
 					gui->end_group();
 				}
-				}
 				gui->pop_style_var();
 			}
 			gui->end_content();
