@@ -266,6 +266,7 @@ namespace sky::render {
 
 		void HealthBar(float x, float y, float w, float h, int value, int v_max)
 		{
+			if (v_max <= 0) return;
 			ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), ImColor(0.f, 0.f, 0.f, 0.725f), 0.f, 0);
 			ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + ((h / float(v_max)) * (float)value)), ImColor(std::fmin(510 * (v_max - value) / 100, 255), std::fmin(510 * value / 100, 255), 25, 255), 0.0f, 0);
 		}

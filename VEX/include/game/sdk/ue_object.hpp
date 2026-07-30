@@ -117,7 +117,7 @@ namespace sky::game::sdk {
             }
 
             // Direct name pool read
-            const std::uint32_t chunkOffset = static_cast<std::uint32_t>(key >> 16);
+            const std::uint32_t chunkOffset = static_cast<std::uint32_t>(static_cast<std::uint32_t>(key) >> 16);
             const std::uint16_t nameOffset = static_cast<std::uint16_t>(key & 0xFFFF);
             const std::uintptr_t chunkAddr = sky::driver::g_driver->get_base_address() + offsets::FNamePool + ((static_cast<unsigned long long>(chunkOffset) + 2ULL) * 8ULL);
             const std::uintptr_t namePoolChunk = sky::driver::g_driver->read<std::uintptr_t>(chunkAddr);

@@ -10,7 +10,7 @@ namespace sky::game::sdk {
         explicit APlayerCameraManager(uintptr_t base_address) : UObject(base_address) {}
 
         FMinimalViewInfo get_camera_view() const {
-            if (!is_valid()) {};
+            if (!is_valid()) return {};
 
 			FCameraCacheEntry CameraCachePrivate = read<FCameraCacheEntry>(offsets::CameraCache);
 
