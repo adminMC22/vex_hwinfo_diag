@@ -186,7 +186,7 @@ namespace sky::driver {
 
         HANDLE hFile = CreateFileA(filename,
             GENERIC_WRITE, 0, NULL,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile == INVALID_HANDLE_VALUE) {
             LOG_ERROR("Failed to create temp driver file: GLE=" +
                 std::to_string(GetLastError()));
