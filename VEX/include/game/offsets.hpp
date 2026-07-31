@@ -12,27 +12,30 @@
 namespace offsets {
 
     // ---- Game Engine / SDK (UE5 specific) ----
-    inline uintptr_t GWorld           = 0xB490930;
-    inline uintptr_t FNamePool        = 0xB600040;
-    inline uintptr_t FNameState       = 0xB7DC100;
+    // Values for 13.02.00.5092570 (bootmgfw/ValorantOffsets)
+    inline uintptr_t GWorld           = 0xCE0BC40;
+    inline uintptr_t FNamePool        = 0xCFD0D00;
+    inline uintptr_t FNameState       = 0xD1DD880;
     inline uintptr_t OwningWord       = 0x00C0;
     inline uintptr_t PersistentLevel  = 0x0038;
     inline uintptr_t OwningGameInstance = 0x01D8;
-    inline uintptr_t GameState        = 0x0198;
-    inline uintptr_t Levels           = 0x01A0;
+    inline uintptr_t GameState        = 0x0178;
+    inline uintptr_t Levels           = 0x0190;
     inline uintptr_t LocalPlayers     = 0x0040;
-    inline uintptr_t ActorArray       = 0x0098;
+    inline uintptr_t ActorArray       = 0x0098;   // legacy (direct array, pre-ActorCluster)
+    inline uintptr_t ActorCluster     = 0x00E0;   // ULevel->ULevelActorContainer*
+    inline uintptr_t LevelActors      = 0x0030;   // ULevelActorContainer->TArray<AActor*>
     inline uintptr_t ViewportClient   = 0x0050;
 
     // ---- Player / Controller ----
     inline uintptr_t PlayerController  = 0x0038;
-    inline uintptr_t AcknowledgedPawn  = 0x0510;
-    inline uintptr_t PlayerState       = 0x0480;
-    inline uintptr_t PlayerCameraManager = 0x0520;
-    inline uintptr_t ControlRotation   = 0x03B0;
-    inline uintptr_t CurrentMesh       = 0x0518;
-    inline uintptr_t Inventory         = 0x08B0;
-    inline uintptr_t CurrentEquippable = 0x08B8;
+    inline uintptr_t AcknowledgedPawn  = 0x0518;
+    inline uintptr_t PlayerState       = 0x0488;
+    inline uintptr_t PlayerCameraManager = 0x0528;
+    inline uintptr_t ControlRotation   = 0x04E8;
+    inline uintptr_t CurrentMesh       = 0x04F0;
+    inline uintptr_t Inventory         = 0x0C08;   // AShooterCharacter
+    inline uintptr_t CurrentEquippable = 0x0278;   // UAresInventory
     inline uintptr_t LocalObserver     = 0x04F8;
     inline uintptr_t MyHUD             = 0x04F0;
     inline uintptr_t CameraCache       = 0x17B0;
@@ -41,37 +44,37 @@ namespace offsets {
     inline uintptr_t POV               = 0x0580;
 
     // ---- Actor / Entity ----
-    inline uintptr_t RootComponent       = 0x0238;
+    inline uintptr_t RootComponent       = 0x0290;
     inline uintptr_t ComponentToWorld    = 0x01E0;
-    inline uintptr_t RelativeLocation    = 0x0120;
-    inline uintptr_t RelativeRotation    = 0x012C;
+    inline uintptr_t RelativeLocation    = 0x0170;
+    inline uintptr_t RelativeRotation    = 0x0188;
     inline uintptr_t ActorID            = 0x00C8;
     inline uintptr_t FNameID            = 0x0018;
     inline uintptr_t Dormant            = 0x00F0;
     inline uintptr_t UniqueID           = 0x0030;
-    inline uintptr_t Mesh               = 0x04E8;
+    inline uintptr_t Mesh               = 0x04F0;   // ACharacter.Mesh
 
     // ---- Skeleton / Bones ----
-    inline uintptr_t BoneArray          = 0x05D0;
-    inline uintptr_t BoneCount          = 0x05D8;
-    inline uintptr_t BoneArrayCache     = 0x05C8;
+    inline uintptr_t BoneArray          = 0x0B18;   // USkeletalMeshComponent.CachedBoneSpaceTransforms
+    inline uintptr_t BoneCount          = 0x0B20;   // CachedBoneSpaceTransforms.Count
+    inline uintptr_t BoneArrayCache     = 0x0B28;   // CachedComponentSpaceTransforms
 
     // ---- Render / Visibility ----
     inline uintptr_t LastRenderTime     = 0x02E8;
     inline uintptr_t LastSubmitTime     = 0x02E0;
     inline uintptr_t IsVisible          = 0x0690;
-    inline uintptr_t bWasAlly           = 0x0F09;
+    inline uintptr_t bWasAlly           = 0x0F78;   // AShooterCharacter.WasAlly
 
     // ---- Teams ----
-    inline uintptr_t TeamComponent      = 0x04A0;
+    inline uintptr_t TeamComponent      = 0x06A8;   // AresPlayerStateBase
     inline uintptr_t TeamID             = 0x00E8;
 
     // ---- Health / Damage ----
-    inline uintptr_t DamageHandler      = 0x09C0;
-    inline uintptr_t Health             = 0x00E0;
-    inline uintptr_t MaxHealth          = 0x00E4;
-    inline uintptr_t Shield             = 0x0124;
-    inline uintptr_t MaxShield          = 0x0128;
+    inline uintptr_t DamageHandler      = 0x0C68;   // AShooterCharacter (AGameObject: 0x490)
+    inline uintptr_t Health             = 0x0200;   // UDamageableComponent.CachedLife[0].Life
+    inline uintptr_t MaxHealth          = 0x0204;   // CachedLife[0].MaximumLife
+    inline uintptr_t Shield             = 0x0208;   // CachedLife[1].Life
+    inline uintptr_t MaxShield          = 0x020C;   // CachedLife[1].MaximumLife
     inline uintptr_t ShieldType         = 0x0118;
     inline uintptr_t DamageType         = 0x09C8;
     inline uintptr_t DamageSections     = 0x09D0;

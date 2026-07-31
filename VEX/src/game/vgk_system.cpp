@@ -22,14 +22,23 @@ namespace sky::game {
 	}
 
 	ShadowData VGK::find_pml4_base() {
-		ShadowRegionsDataStructure data = sky::driver::g_driver->read<ShadowRegionsDataStructure>(sky::driver::g_driver->get_kernel_base("vgk.sys") + offsets::vgk::ShadowRegions);
+		auto vgk_base = sky::driver::g_driver->get_kernel_base("vgk.sys");
+		if (!vgk_base) {
+			LOG_WARNING("find_pml4_base: vgk.sys NOT in module list (hidden or renamed)");
+			sky::driver::write_state_log("vgk=NOT_FOUND");
+		}
+		ShadowRegionsDataStructure data = sky::driver::g_driver->read<ShadowRegionsDataStructure>(vgk_base + offsets::vgk::ShadowRegions);
 		if (!data.OriginalPML4_t || !data.ClonedPML4_t) {
-			data = sky::driver::g_driver->read<ShadowRegionsDataStructure>(sky::driver::g_driver->get_kernel_base("vgk.sys") + offsets::old_vgk::ShadowRegions);
+			data = sky::driver::g_driver->read<ShadowRegionsDataStructure>(vgk_base + offsets::old_vgk::ShadowRegions);
 		}
 		auto decypted_cloned_cr3 = this->decrypt();
 		if (!decypted_cloned_cr3) {
 			LOG_WARNING("find_pml4_base: decrypt returned 0 (stale VGK offsets?)");
 		}
+		sky::driver::write_state_log("vgk_base=0x" + std::format("{:x}", vgk_base) +
+			" cr3=0x" + std::format("{:x}", decypted_cloned_cr3) +
+			" freeidx=0x" + std::format("{:x}", data.FreeIndex) +
+			" pml4base=0x" + std::format("{:x}", data.FreeIndex << 0x27));
 		return { decypted_cloned_cr3, data.FreeIndex << 0x27 };
 	}
 

@@ -21,9 +21,14 @@ namespace sky::game::sdk {
         ULocalPlayer get_local_player() const {
             if (!is_valid()) return {};
 
-            const auto local_player_addr = read<uintptr_t>(offsets::LocalPlayers);
-            if (local_player_addr) {
-                return sky::driver::g_driver->read<ULocalPlayer>(local_player_addr);
+            // LocalPlayers is TArray<ULocalPlayer*>; deref the data pointer,
+            // then take element [0].
+            const auto array_data = read<uintptr_t>(offsets::LocalPlayers);
+            if (array_data) {
+                const auto local_player_addr = sky::driver::g_driver->read<uintptr_t>(array_data);
+                if (local_player_addr) {
+                    return ULocalPlayer(local_player_addr);
+                }
             }
 
             return {};

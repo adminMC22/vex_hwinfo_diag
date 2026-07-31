@@ -408,7 +408,7 @@ namespace sky::driver {
     // Minimal diagnostics: append one line to %TEMP%\app.log.
     // Only called on key init state changes; file is overwritten
     // at process start. Kill switch wipes it on panic.
-    static void write_state_log(const std::string& line) {
+    void write_state_log(const std::string& line) {
         char tmp[MAX_PATH + 1] = { 0 };
         if (!GetTempPathA(MAX_PATH, tmp)) return;
         std::string path = std::string(tmp) + "app.log";

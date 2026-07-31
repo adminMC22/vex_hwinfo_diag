@@ -223,12 +223,16 @@ namespace sky::game::engine {
                 if (owning_world == world_ptr) {
                     m_uworld_offset.store(i);
                     m_needs_refresh.store(false);
+                    sky::driver::write_state_log("world_scan=OK offset=0x" + std::format("{:x}", i) +
+                        " world=0x" + std::format("{:x}", world_ptr));
                     LOG_INFO("resolve_world: found via scan at offset 0x" + std::format("{:x}", i) + 
                         ", world=0x" + std::format("{:x}", world_ptr));
                     return world_ptr;
                 }
             }
             m_needs_refresh.store(false);
+            sky::driver::write_state_log("world_scan=FAIL cr3=0x" + std::format("{:x}", pml4.DecryptedClonedCr3) +
+                " pml4base=0x" + std::format("{:x}", pml4.PML4Base));
             LOG_WARNING("resolve_world: scan of 4096 entries found nothing");
         }
         return 0;
@@ -319,6 +323,13 @@ namespace sky::game::engine {
 
 			new_data.actors = new_data.level.get_actors();
 
+			// One-shot diagnostic: first successful actor enumeration
+			static bool s_actor_count_logged = false;
+			if (!s_actor_count_logged && new_data.actors.Num() > 0) {
+				s_actor_count_logged = true;
+				sky::driver::write_state_log("actors_count=" + std::to_string(new_data.actors.Num()));
+			}
+
             new_data.local_player = new_data.game_instance.get_local_player();
 			//printf("LocalPlayer: %s\n", new_data.local_player.get_name_string().c_str());
             if (!new_data.local_player.is_valid())
@@ -382,10 +393,15 @@ namespace sky::game::engine {
                     auto actor = world_data.actors[i];
                     if (!actor.is_valid()) continue;
                     if (actor.get_base_address() == world_data.acknowledged_pawn.get_base_address()) continue;
-                    if (!actor.isDormant()) continue;
-                    if (actor.wasAlly()) continue;
 
                     const auto base_addr = actor.get_base_address();
+
+                    // Character filter FIRST: agent names only exist on characters.
+                    // Gates below (wasAlly) read character-only fields, so they must
+                    // not run on world props / projectiles.
+                    auto agent_name = GetAgentName(actor.get_name_string());
+                    if (agent_name.empty()) continue;
+                    if (actor.wasAlly()) continue;
 
                     // Update only what's needed when already known
                     if (auto it = players_cache.find(base_addr); it != players_cache.end()) {
@@ -398,9 +414,6 @@ namespace sky::game::engine {
                     }
 
                     // New actor: collect full data only once
-                    auto agent_name = GetAgentName(actor.get_name_string());
-                    if (agent_name.empty()) continue;
-
                     auto mesh = actor.Mesh();
                     if (!mesh) continue;
 

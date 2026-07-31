@@ -15,9 +15,16 @@ namespace sky::game::sdk {
         explicit ULevel(uintptr_t base_address)
             : UObject(base_address) {}
 
-        // Specific ULevel methods
+        // UE 5.5+: actors live in ULevelActorContainer (ULevel->ActorCluster->Actors).
+        // Falls back to the legacy direct array if the cluster pointer is null.
         TArray<AActor> get_actors() const {
-			return read<TArray<AActor>>(offsets::ActorArray);
+            if (!is_valid()) return {};
+
+            const auto cluster = read<uintptr_t>(offsets::ActorCluster);
+            if (cluster) {
+                return sky::driver::g_driver->read<TArray<AActor>>(cluster + offsets::LevelActors);
+            }
+            return sky::driver::g_driver->read<TArray<AActor>>(offsets::ActorArray);
         }
     };
 

@@ -14,13 +14,14 @@
  * even if the paste URL goes stale. No recompilation needed.
  */
 
+#include <algorithm>
+#include <cctype>
+#include <format>
 #include <string>
 #include <sstream>
-#include <iostream>
-#include <vector>
-#include <windows.h>
+#include <Windows.h>
 #include <winhttp.h>
-#include <nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include "utils/logger.hpp"
 
 using json = nlohmann::json;
@@ -30,8 +31,11 @@ using json = nlohmann::json;
 // ============================================================
 #define OFFSET_URL_PRIMARY  L"https://paste.c-net.org/BellhopSacked"
 #define OFFSET_URL_BACKUP   L"https://paste.c-net.org/PsychoPetey"
-// GitHub raw markdown - always has current GWorld/FNamePool
-#define OFFSET_URL_GITHUB   L"https://raw.githubusercontent.com/bootmgfw/ValorantOffsets/main/Offsets/13.01.00.5090349.md"
+// GitHub raw markdown - always has current GWorld/FNamePool.
+// The README lists the latest version file; we resolve it at runtime
+// so this keeps working across weekly game patches.
+#define OFFSET_URL_README   L"https://raw.githubusercontent.com/bootmgfw/ValorantOffsets/main/README.md"
+#define OFFSET_URL_GITHUB_ROOT L"https://raw.githubusercontent.com/bootmgfw/ValorantOffsets/main/Offsets/"
 
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
@@ -117,9 +121,36 @@ static void parse_github_markdown(const std::string& md, json& out) {
         if (!fstate.empty()) o["FNameState"] = fstate;
         if (!gstate.empty()) o["GWorldState"] = gstate;
 
-        std::cout << "[Offsets] GitHub fallback: GWorld=" << gworld
-                  << " FNamePool=" << fname << std::endl;
+        LOG_INFO(std::format("Offsets: GitHub fallback: GWorld={} FNamePool={}", gworld, fname));
     }
+}
+
+// Resolve the latest version file name from the repo README:
+// README contains "Latest version: [13.02.00.5092570](/Offsets/13.02.00.5092570.md)"
+static bool try_fetch_latest_github(json& out) {
+    std::string readme;
+    if (!try_winhttp(OFFSET_URL_README, readme)) return false;
+
+    auto link_pos = readme.find("/Offsets/");
+    while (link_pos != std::string::npos) {
+        auto end = readme.find(".md", link_pos + 9);
+        if (end != std::string::npos && end - link_pos < 48) {
+            std::string file = readme.substr(link_pos + 9, end - (link_pos + 9));
+            bool valid = !file.empty() && std::all_of(file.begin(), file.end(),
+                [](char c) { return std::isdigit(static_cast<unsigned char>(c)) || c == '.'; });
+            if (valid) {
+                std::wstring url = OFFSET_URL_GITHUB_ROOT;
+                url += std::wstring(file.begin(), file.end()) + L".md";
+                std::string md;
+                if (try_winhttp(url.c_str(), md)) {
+                    parse_github_markdown(md, out);
+                    return !out.is_null() && out.contains("offsets");
+                }
+            }
+        }
+        link_pos = readme.find("/Offsets/", link_pos + 9);
+    }
+    return false;
 }
 
 inline json setup_curl() {
@@ -133,17 +164,13 @@ inline json setup_curl() {
     else if (try_winhttp(OFFSET_URL_BACKUP, response)) {
         LOG_INFO("Offsets: backup source OK");
     }
-    // 3. Try GitHub markdown (auto-parsed for GWorld/FNamePool)
-    else if (try_winhttp(OFFSET_URL_GITHUB, response)) {
-        LOG_INFO("Offsets: GitHub fallback");
+    // 3. Resolve the latest version from the GitHub README, then fetch it
+    else {
         json j;
-        parse_github_markdown(response, j);
-        if (!j.is_null() && j.contains("offsets")) {
+        if (try_fetch_latest_github(j)) {
+            LOG_INFO("Offsets: GitHub fallback OK");
             return j;
         }
-        return json{};
-    }
-    else {
         LOG_WARNING("Offsets: all sources unreachable");
         return json{};
     }

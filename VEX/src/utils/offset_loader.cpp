@@ -40,6 +40,12 @@ void initialize()
         return;
     }
 
+    // GitHub markdown source writes these under json["offsets"]["GWorld"] etc.
+    // The old paste JSON uses lowercase snake_case keys. Accept both.
+    readValue(json["offsets"]["GWorld"], GWorld);
+    readValue(json["offsets"]["FNamePool"], FNamePool);
+    readValue(json["offsets"]["FNameState"], FNameState);
+
     readValue(json["offsets"]["fname_pool"], fname_pool);
     readValue(json["offsets"]["persistent_level"], persistent_level);
     readValue(json["offsets"]["owning_game_instance"], owning_game_instance);
