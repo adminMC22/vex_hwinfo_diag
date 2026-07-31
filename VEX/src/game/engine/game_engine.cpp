@@ -155,12 +155,18 @@ namespace sky::game::engine {
         auto pml4 = m_vgk->find_pml4_base();
         if (pml4.PML4Base == 0 && pml4.DecryptedClonedCr3 == 0) {
             LOG_WARNING("resolve_world: PML4 is all zero — VGK find_pml4_base failed");
+            // Without a PML4 we cannot translate any game address. The
+            // driver's read_memory() now refuses to treat user VAs as
+            // physical addresses, so failing here is safe — no garbage
+            // pointer can reach the kernel driver.
+            return 0;
         }
 
         auto offset = m_uworld_offset.load();
         if (offset) {
             sky::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
             m_needs_refresh.store(false);
+            if (pml4.PML4Base == 0) return 0;
             auto world_ptr = sky::driver::g_driver->read<uintptr_t>(pml4.PML4Base + offset);
             if(!world_ptr) {
                 LOG_WARNING("resolve_world: cached offset 0x" + std::format("{:x}", offset) + " read returned 0");
@@ -198,6 +204,10 @@ namespace sky::game::engine {
 
         if (m_needs_refresh.load()) {
             sky::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
+            if (pml4.PML4Base == 0) {
+                m_needs_refresh.store(false);
+                return 0;
+            }
             for (int i = 0; i < 0x1000; i += 8) {
                 const auto world_ptr = sky::driver::g_driver->read<uintptr_t>(pml4.PML4Base + i);
                 if (!world_ptr) continue;

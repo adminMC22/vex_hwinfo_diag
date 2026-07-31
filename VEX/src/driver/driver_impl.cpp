@@ -295,8 +295,37 @@ namespace sky::driver {
     // #define THROTTLE_IOCTL CTL_CODE(FILE_DEVICE_UNKNOWN, 0x6498, METHOD_BUFFERED, FILE_READ_ACCESS)
     #define TS_IOCTL_READ 0x80006498
 
+    static uint64_t s_total_phys = 0;
+
+    static uint64_t get_total_phys() {
+        if (s_total_phys == 0) {
+            MEMORYSTATUSEX ms{ sizeof(ms) };
+            if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys > 0) {
+                s_total_phys = ms.ullTotalPhys;
+            } else {
+                // Conservative fallback: 1GB — never probe above this
+                s_total_phys = 0x40000000ULL;
+            }
+        }
+        return s_total_phys;
+    }
+
+    // Is this physical address range inside installed RAM?
+    // ThrottleStop's driver uses MmMapIoSpace internally; probing an
+    // address beyond RAM (or in an MMIO hole) can bugcheck the system
+    // with MEMORY_MANAGEMENT. Reject anything outside installed RAM.
+    static bool pa_valid(uintptr_t pa, size_t size) {
+        uint64_t total = get_total_phys();
+        if (size == 0) return false;
+        if (pa >= total) return false;
+        if (pa + size < pa) return false;              // overflow
+        if (pa + size > total) return false;
+        return true;
+    }
+
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
+        if (!pa_valid(phys_addr, size)) return false;
 
         // === ThrottleStop backend ===
         if (g_backend == BACKEND_THROTTLESTOP) {
@@ -376,6 +405,35 @@ namespace sky::driver {
     static uintptr_t s_kernel_pbase = 0;
     static bool s_kernel_offset_ready = false;
 
+    // Verify a candidate kernel physical base: read the PE header and
+    // check SizeOfImage against ntoskrnl's size from the module list.
+    // All reads are within the candidate's first 4KB, validated by
+    // read_physical's RAM bound.
+    static bool pe_matches(uintptr_t pa, uintptr_t expected_size) {
+        uint32_t pe_off = 0;
+        if (!read_physical(pa + 0x3C, &pe_off, sizeof(pe_off)) || pe_off >= 0x1000)
+            return false;
+        uint32_t pe_sig = 0;
+        if (!read_physical(pa + pe_off, &pe_sig, sizeof(pe_sig)))
+            return false;
+        if ((pe_sig & 0xFFFF) != 0x4550) // "PE"
+            return false;
+        if (expected_size != 0) {
+            uint32_t size_of_image = 0;
+            // SizeOfImage is at PE+0x50 in the optional header
+            if (!read_physical(pa + pe_off + 0x50, &size_of_image, sizeof(size_of_image)))
+                return false;
+            if (size_of_image == 0) return false;
+            // Tolerate a few pages of difference (module list size is
+            // the loaded size, SizeOfImage is the image size).
+            uintptr_t diff = (uintptr_t)(size_of_image > expected_size
+                ? size_of_image - expected_size
+                : expected_size - size_of_image);
+            if (diff > 0x3000) return false;
+        }
+        return true;
+    }
+
     static bool init_kernel_phys_offset() {
         if (s_kernel_offset_ready) return s_kernel_pbase != 0;
         s_kernel_offset_ready = true;
@@ -402,68 +460,64 @@ namespace sky::driver {
         if (s_kernel_vbase == 0) return false;
         LOG_INFO("kernel_phys_offset: using heuristic to find kernel physical base...");
 
-        // === Heuristic approach: no brute-force physical scan ===
-        // On Win10 x64, kernel physical is typically one of these offsets from virtual:
-        //   phys = virt - 0xFFFFF78000000000   (common on 22H2+ non-VBS)
-        //   phys = virt - 0xFFFFF80000000000   (pre-2020 builds)
-        //   phys = virt - 0xFFFFF78000000000 + 0x80000 (slight variation)
+        // === Approach: fast heuristic tries, then limited scan ===
+        // The kernel image is NOT mapped at identity + phys (identity map
+        // is 0xFFFFF78000000000). On Win10 x64 the ntoskrnl image lives in
+        // the 0xFFFFF80000000000 region and its physical load base is
+        // randomized somewhere in the low physical range (16MB-1GB).
         //
-        // If the heuristic fails, fall back to a LIMITED scan around the
-        // expected area (128 MB range at 2 MB granularity = 64 IOCTLs).
-
-        static const int64_t k_heuristic_tweaks[] = {
-            0,                  // baseline: virt - 0xFFFFF78000000000
-            -0x100000,          // -1MB
-            0x100000,           // +1MB
-            -0x80000,           // -512KB
-            0x80000,            // +512KB
-        };
-        static const uint64_t k_base_deduction = 0xFFFFF78000000000ULL;
+        // Strategy:
+        //  1. Try the identity-map heuristic first (a few reads, cheap).
+        //  2. If that misses, scan physical memory [16MB, min(1GB,total_phys)]
+        //     at 2MB granularity looking for an MZ whose PE SizeOfImage
+        //     matches ntoskrnl's size from the module list. All scan
+        //     addresses are validated against installed RAM by read_physical,
+        //     so this can never probe an invalid physical address.
+        uintptr_t ntk_size = 0;
+        for (ULONG i = 0; i < modules->Count; ++i) {
+            auto& mod = modules->Module[i];
+            std::string name((char*)mod.FullPathName + mod.OffsetToFileName);
+            if (name == "ntoskrnl.exe") {
+                ntk_size = mod.ImageSize;
+                break;
+            }
+        }
 
         uint8_t verify[2];
         bool found = false;
 
-        // Try heuristic offsets first (fast)
+        // 1) Identity-map heuristic (cheap; works when phys load base
+        //    happens to align with the virtual delta).
+        static const int64_t k_heuristic_tweaks[] = {
+            0, -0x100000, 0x100000, -0x80000, 0x80000,
+        };
         for (int64_t tweak : k_heuristic_tweaks) {
-            uintptr_t guess = (uintptr_t)((int64_t)(s_kernel_vbase - k_base_deduction) + tweak);
+            uintptr_t guess = (uintptr_t)((int64_t)(s_kernel_vbase - 0xFFFFF78000000000ULL) + tweak);
             if (read_physical(guess, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
-                // Confirm with PE signature at offset 0x3C
-                uint32_t pe_off = 0;
-                if (read_physical(guess + 0x3C, &pe_off, sizeof(pe_off)) &&
-                    pe_off < 0x1000) {
-                    uint32_t pe_sig = 0;
-                    if (read_physical(guess + pe_off, &pe_sig, sizeof(pe_sig)) &&
-                        (pe_sig & 0xFFFF) == 0x4550) { // "PE" little-endian
-                        s_kernel_pbase = guess;
-                        found = true;
-                        LOG_INFO("kernel_phys_offset: found via heuristic at phys=0x" +
-                            std::format("{:x}", s_kernel_pbase));
-                        break;
-                    }
+                if (pe_matches(guess, ntk_size)) {
+                    s_kernel_pbase = guess;
+                    found = true;
+                    LOG_INFO("kernel_phys_offset: found via heuristic at phys=0x" +
+                        std::format("{:x}", s_kernel_pbase));
+                    break;
                 }
             }
         }
 
-        // Fallback: limited 2MB-granularity scan around the virtual address (max 64 tries)
+        // 2) Limited physical scan: [16MB, min(1GB, total_phys)] at 2MB steps.
+        //    This is the range where the ntoskrnl image is loaded on Win10 x64.
         if (!found) {
-            LOG_INFO("kernel_phys_offset: heuristic miss, scanning limited range...");
-            // Kernel is usually within 64MB of virt - 0xFFFFF78000000000
-            uintptr_t base_guess = (uintptr_t)((int64_t)(s_kernel_vbase - k_base_deduction));
-            uintptr_t scan_start = (base_guess & ~0x1FFFFFULL); // 2MB align
-            for (uintptr_t pa = scan_start; pa < scan_start + 0x4000000; pa += 0x200000) {
+            LOG_INFO("kernel_phys_offset: heuristic miss, scanning [16MB..1GB) at 2MB...");
+            uint64_t scan_limit = get_total_phys();
+            if (scan_limit > 0x40000000ULL) scan_limit = 0x40000000ULL;
+            for (uintptr_t pa = 0x1000000; pa + 0x200000 <= scan_limit; pa += 0x200000) {
                 if (read_physical(pa, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
-                    uint32_t pe_off = 0;
-                    if (read_physical(pa + 0x3C, &pe_off, sizeof(pe_off)) &&
-                        pe_off < 0x1000) {
-                        uint32_t pe_sig = 0;
-                        if (read_physical(pa + pe_off, &pe_sig, sizeof(pe_sig)) &&
-                            (pe_sig & 0xFFFF) == 0x4550) {
-                            s_kernel_pbase = pa;
-                            found = true;
-                            LOG_INFO("kernel_phys_offset: found via scan at phys=0x" +
-                                std::format("{:x}", s_kernel_pbase));
-                            break;
-                        }
+                    if (pe_matches(pa, ntk_size)) {
+                        s_kernel_pbase = pa;
+                        found = true;
+                        LOG_INFO("kernel_phys_offset: found via scan at phys=0x" +
+                            std::format("{:x}", s_kernel_pbase));
+                        break;
                     }
                 }
             }
@@ -599,8 +653,14 @@ namespace sky::driver {
             if (addr >= 0xFFFF800000000000ULL) {
                 uintptr_t phys = kernel_va_to_pa(addr);
                 if (phys) return read_physical(phys, buf, sz);
+                return false;
             }
-            return read_physical(addr, buf, sz);
+            // No DTB and not a kernel address: this is a user-space virtual
+            // address that we cannot translate. NEVER pass it to
+            // read_physical() as a raw physical address — a game VA like
+            // 0x1F9A2C00000 would probe 33GB+ of physical space and
+            // bugcheck the system (MEMORY_MANAGEMENT).
+            return false;
         }
 
         bool write_memory(void* dst, void* src, size_t sz) override {
@@ -658,10 +718,12 @@ namespace sky::driver {
         void* find_pattern(uintptr_t, const char*, const char*) override { return nullptr; }
 
         void set_dir_base(void* dir) override {
+            m_dtb = dir ? (uintptr_t)dir : 0;
+            m_dtb_set = (dir != nullptr);
             if (dir) {
-                m_dtb = (uintptr_t)dir;
-                m_dtb_set = true;
                 LOG_DEBUG("DTB set: 0x" + std::format("{:x}", m_dtb));
+            } else {
+                LOG_DEBUG("DTB cleared");
             }
         }
 
