@@ -164,7 +164,7 @@ namespace sky::game::engine {
             auto now = std::chrono::steady_clock::now();
             if (now - s_last_attach >= std::chrono::seconds(2)) {
                 s_last_attach = now;
-                if (sky::driver::g_driver->attach_process(xorstr_("VALORANT-Win64-Shipping.exe"))) {
+                if (sky::driver::g_driver->attach_process(std::wstring(xorstr_(L"VALORANT-Win64-Shipping.exe").c_str()))) {
                     LOG_INFO("resolve_world: attached to game");
                 }
                 game_base = sky::driver::g_driver->get_base_address();
