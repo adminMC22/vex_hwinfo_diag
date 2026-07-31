@@ -22,6 +22,16 @@ namespace sky::game {
 	}
 
 	ShadowData VGK::find_pml4_base() {
+		// Cache: the shadow regions only change when the game (re)attaches.
+		// Re-read at most once per second; keeps the IOCTL stream low.
+		static std::chrono::steady_clock::time_point s_last_read{};
+		static ShadowData s_cached{};
+		auto now = std::chrono::steady_clock::now();
+		if (s_cached.DecryptedClonedCr3 && now - s_last_read < std::chrono::seconds(1)) {
+			return s_cached;
+		}
+		s_last_read = now;
+
 		auto vgk_base = sky::driver::g_driver->get_kernel_base("vgk.sys");
 		if (!vgk_base) {
 			LOG_WARNING("find_pml4_base: vgk.sys NOT in module list (hidden or renamed)");
@@ -35,11 +45,20 @@ namespace sky::game {
 		if (!decypted_cloned_cr3) {
 			LOG_WARNING("find_pml4_base: decrypt returned 0 (stale VGK offsets?)");
 		}
-		sky::driver::write_state_log("vgk_base=0x" + std::format("{:x}", vgk_base) +
-			" cr3=0x" + std::format("{:x}", decypted_cloned_cr3) +
-			" freeidx=0x" + std::format("{:x}", data.FreeIndex) +
-			" pml4base=0x" + std::format("{:x}", data.FreeIndex << 0x27));
-		return { decypted_cloned_cr3, data.FreeIndex << 0x27 };
+		s_cached = { decypted_cloned_cr3, data.FreeIndex << 0x27 };
+
+		// Log only on state change (the world thread calls this every tick).
+		static uintptr_t s_last_cr3 = 0xFFFFFFFFFFFFFFFF;
+		static uintptr_t s_last_pml4 = 0xFFFFFFFFFFFFFFFF;
+		if (s_cached.DecryptedClonedCr3 != s_last_cr3 || s_cached.PML4Base != s_last_pml4) {
+			s_last_cr3 = s_cached.DecryptedClonedCr3;
+			s_last_pml4 = s_cached.PML4Base;
+			sky::driver::write_state_log("vgk_base=0x" + std::format("{:x}", vgk_base) +
+				" cr3=0x" + std::format("{:x}", s_cached.DecryptedClonedCr3) +
+				" freeidx=0x" + std::format("{:x}", data.FreeIndex) +
+				" pml4base=0x" + std::format("{:x}", s_cached.PML4Base));
+		}
+		return s_cached;
 	}
 
 	uint64_t VGK::cpuid_rax() {

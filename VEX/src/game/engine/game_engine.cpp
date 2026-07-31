@@ -152,89 +152,115 @@ namespace sky::game::engine {
     }
 
     uintptr_t GameEngine::resolve_world_address() {
+        auto game_base = sky::driver::g_driver->get_base_address();
+        if (!game_base) {
+            return 0;
+        }
+
         auto pml4 = m_vgk->find_pml4_base();
-        if (pml4.PML4Base == 0 && pml4.DecryptedClonedCr3 == 0) {
-            LOG_WARNING("resolve_world: PML4 is all zero — VGK find_pml4_base failed");
-            // Without a PML4 we cannot translate any game address. The
-            // driver's read_memory() now refuses to treat user VAs as
-            // physical addresses, so failing here is safe — no garbage
-            // pointer can reach the kernel driver.
-            return 0;
+
+        // ---- Build the CR3 candidate list: VGK clone first, then the real
+        // CR3 from the EPROCESS list (immune to vgk.sys updates). ----
+        uintptr_t candidates[2] = { 0, 0 };
+        int n_candidates = 0;
+        if (sky::game::is_plausible_cr3(pml4.DecryptedClonedCr3)) {
+            candidates[n_candidates++] = pml4.DecryptedClonedCr3;
         }
-        if (!pml4.DecryptedClonedCr3) {
-            LOG_WARNING("resolve_world: cloned CR3 is 0 — cannot page-walk game memory");
+        auto kproc_cr3 = m_kproc_cr3.load();
+        if (!kproc_cr3) {
+            // EPROCESS walk is read-heavy (~2-3K reads the first time);
+            // gate re-attempts to at most once every 3 seconds.
+            static std::chrono::steady_clock::time_point s_last_attempt{};
+            auto now = std::chrono::steady_clock::now();
+            if (now - s_last_attempt >= std::chrono::seconds(3)) {
+                s_last_attempt = now;
+                kproc_cr3 = sky::game::find_process_cr3(sky::driver::g_driver->get_process_id());
+                if (kproc_cr3) {
+                    sky::driver::g_driver->set_dir_base((void*)kproc_cr3);
+                    if (sky::game::verify_game_pe(game_base)) {
+                        m_kproc_cr3.store(kproc_cr3);
+                        static bool s_logged = false;
+                        if (!s_logged) {
+                            s_logged = true;
+                            sky::driver::write_state_log("cr3=EPROCESS 0x" + std::format("{:x}", kproc_cr3));
+                        }
+                    } else {
+                        LOG_WARNING("resolve_world: EPROCESS CR3 failed PE verification");
+                        kproc_cr3 = 0;
+                    }
+                }
+            }
+        }
+        if (kproc_cr3) {
+            candidates[n_candidates++] = kproc_cr3;
+        }
+        if (!n_candidates) {
+            static bool s_logged = false;
+            if (!s_logged) {
+                s_logged = true;
+                sky::driver::write_state_log("cr3=NONE");
+            }
+            LOG_WARNING("resolve_world: no usable CR3 (VGK clone invalid, EPROCESS walk failed)");
             return 0;
         }
 
-        auto offset = m_uworld_offset.load();
-        if (offset) {
-            sky::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
+        // ---- Direct GWorld read with structural validation for each CR3. ----
+        for (int c = 0; c < n_candidates; c++) {
+            sky::driver::g_driver->set_dir_base((void*)candidates[c]);
+            auto world = sky::driver::g_driver->read<uintptr_t>(game_base + offsets::GWorld);
+            if (!world) continue;
+            auto lvl = sky::driver::g_driver->read<uintptr_t>(world + offsets::PersistentLevel);
+            if (!lvl || lvl == world) continue;
+            auto owning = sky::driver::g_driver->read<uintptr_t>(lvl + offsets::OwningWord);
+            if (owning != world) continue;
             m_needs_refresh.store(false);
-            if (pml4.PML4Base == 0) return 0;
-            auto world_ptr = sky::driver::g_driver->read<uintptr_t>(pml4.PML4Base + offset);
-            if(!world_ptr) {
-                LOG_WARNING("resolve_world: cached offset 0x" + std::format("{:x}", offset) + " read returned 0");
-                m_uworld_offset.store(0);
-                m_needs_refresh.store(true);
+            static bool s_logged = false;
+            if (!s_logged) {
+                s_logged = true;
+                sky::driver::write_state_log("world_scan=OK (direct) world=0x" + std::format("{:x}", world));
             }
-            return world_ptr;
+            return world;
         }
 
-        if (!m_needs_refresh.load()) {
-            sky::driver::g_driver->set_dir_base((void*)0);
-            auto base = sky::driver::g_driver->get_base_address();
-            if (base == 0) {
-                LOG_WARNING("resolve_world: get_base_address returned 0");
-            }
-            auto world = sky::driver::g_driver->read<uintptr_t>(base + offsets::GWorld);
-            if (world == 0) {
-                LOG_WARNING("resolve_world: GWorld offset read returned 0 at base+0x" + 
-                    std::format("{:x}", offsets::GWorld));
-            }
-            auto world_ptr = sky::driver::g_driver->read<uintptr_t>(world);
-            if (world_ptr == 0) {
-                LOG_WARNING("resolve_world: dereferenced world is null");
-            }
-            auto persistent_level = sky::driver::g_driver->read<uintptr_t>(world_ptr + offsets::PersistentLevel);
-            if (persistent_level == world_ptr || !persistent_level) {
-                m_needs_refresh.store(true);
-                LOG_INFO("resolve_world: direct read failed, scanning next tick");
-            }
-            else {
-                LOG_INFO("resolve_world: found via direct read, world=0x" + std::format("{:x}", world_ptr));
-                return world_ptr;
-            }
-        }
-
-        if (m_needs_refresh.load()) {
+        // ---- Scan fallback (needs VGK's PML4Base; not available via EPROCESS). ----
+        if (pml4.PML4Base && pml4.DecryptedClonedCr3) {
             sky::driver::g_driver->set_dir_base((void*)pml4.DecryptedClonedCr3);
-            if (pml4.PML4Base == 0) {
-                m_needs_refresh.store(false);
-                return 0;
+            auto offset = m_uworld_offset.load();
+            if (offset) {
+                auto world_ptr = sky::driver::g_driver->read<uintptr_t>(pml4.PML4Base + offset);
+                if (world_ptr) {
+                    const auto lvl = sky::driver::g_driver->read<uintptr_t>(world_ptr + offsets::PersistentLevel);
+                    if (lvl && lvl != world_ptr &&
+                        sky::driver::g_driver->read<uintptr_t>(lvl + offsets::OwningWord) == world_ptr) {
+                        m_needs_refresh.store(false);
+                        return world_ptr;
+                    }
+                }
+                m_uworld_offset.store(0);
             }
             for (int i = 0; i < 0x1000; i += 8) {
                 const auto world_ptr = sky::driver::g_driver->read<uintptr_t>(pml4.PML4Base + i);
                 if (!world_ptr) continue;
-
                 const auto lvl = sky::driver::g_driver->read<uintptr_t>(world_ptr + offsets::PersistentLevel);
                 if (!lvl || lvl == world_ptr) continue;
-
                 const auto owning_world = sky::driver::g_driver->read<uintptr_t>(lvl + offsets::OwningWord);
                 if (owning_world == world_ptr) {
                     m_uworld_offset.store(i);
                     m_needs_refresh.store(false);
                     sky::driver::write_state_log("world_scan=OK offset=0x" + std::format("{:x}", i) +
                         " world=0x" + std::format("{:x}", world_ptr));
-                    LOG_INFO("resolve_world: found via scan at offset 0x" + std::format("{:x}", i) + 
-                        ", world=0x" + std::format("{:x}", world_ptr));
                     return world_ptr;
                 }
             }
-            m_needs_refresh.store(false);
-            sky::driver::write_state_log("world_scan=FAIL cr3=0x" + std::format("{:x}", pml4.DecryptedClonedCr3) +
-                " pml4base=0x" + std::format("{:x}", pml4.PML4Base));
-            LOG_WARNING("resolve_world: scan of 4096 entries found nothing");
         }
+
+        static bool s_logged = false;
+        if (!s_logged) {
+            s_logged = true;
+            sky::driver::write_state_log("world_scan=FAIL cr3=0x" + std::format("{:x}", candidates[0]) +
+                " kproc=0x" + std::format("{:x}", kproc_cr3));
+        }
+        LOG_WARNING("resolve_world: direct read + scan found nothing");
         return 0;
     }
 

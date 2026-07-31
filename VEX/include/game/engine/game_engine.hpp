@@ -10,6 +10,7 @@
 #include <functional>
 
 #include <include/game/vgk_system.hpp>
+#include <include/game/kernel_cr3.hpp>
 #include <include/game/sdk/ue_object.hpp>
 #include <include/game/sdk/uworld.hpp>
 #include <include/game/sdk/ulevel.hpp>
@@ -140,6 +141,7 @@ namespace sky::game::engine {
 
         std::atomic<bool> m_needs_refresh{false};
         std::atomic<uintptr_t> m_uworld_offset{0};
+        std::atomic<uintptr_t> m_kproc_cr3{0};   // real CR3 from EPROCESS (fallback)
 
         uintptr_t m_last_world_addr{0};
     };
