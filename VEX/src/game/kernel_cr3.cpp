@@ -154,9 +154,23 @@ namespace sky::game {
         auto drv = sky::driver::g_driver;
 
         auto psi_ptr = find_ntoskrnl_export("PsInitialSystemProcess");
-        if (!psi_ptr) return false;
+        if (!psi_ptr) {
+            static bool s_logged = false;
+            if (!s_logged) {
+                s_logged = true;
+                sky::driver::write_state_log("attach=TRY nt_export_fail");
+            }
+            return false;
+        }
         auto sys_eproc = drv->read<uintptr_t>(psi_ptr);
-        if (!sys_eproc || sys_eproc < 0xFFFF000000000000ULL) return false;
+        if (!sys_eproc || sys_eproc < 0xFFFF000000000000ULL) {
+            static bool s_logged = false;
+            if (!s_logged) {
+                s_logged = true;
+                sky::driver::write_state_log("attach=TRY sys_eproc_invalid");
+            }
+            return false;
+        }
 
         // Win10 1904x EPROCESS layout
         constexpr uintptr_t kUniqueProcessId    = 0x440;
@@ -173,14 +187,32 @@ namespace sky::game {
         }
 
         auto link = sys_eproc + kActiveProcessLinks;
+        static int s_samples_written = 0;
         for (int i = 0; i < 4096; i++) {
             auto flink = drv->read<uintptr_t>(link);
-            if (!flink || flink < 0xFFFF000000000000ULL) return false;
+            if (!flink || flink < 0xFFFF000000000000ULL) {
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    sky::driver::write_state_log("attach=TRY walk_abort");
+                }
+                return false;
+            }
             auto eproc = flink - kActiveProcessLinks;
             if (i > 0 && eproc == sys_eproc) break;      // wrapped around
 
             // Cheap pre-filter: first 8 chars of the image name.
             auto name_first = drv->read<uint64_t>(eproc + kImageFileName);
+            if (s_samples_written < 8) {
+                // One-shot sample of the first entries (max 8 lines ever):
+                // proves the walk is live and the ImageFileName offset is
+                // right, without flooding the log.
+                char nm[9] = { 0 };
+                for (int c = 0; c < 8; c++) nm[c] = (char)(uint8_t)(name_first >> (c * 8));
+                sky::driver::write_state_log(std::string("attach=TRY sample[") +
+                    std::to_string(s_samples_written) + "]=" + nm);
+                s_samples_written++;
+            }
             if (name_first != want_first) {
                 link = eproc + kActiveProcessLinks;
                 continue;
@@ -201,16 +233,31 @@ namespace sky::game {
 
             auto pid = drv->read<uintptr_t>(eproc + kUniqueProcessId);
             if (pid < 4 || pid > 0xFFFF) {
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    sky::driver::write_state_log("attach=TRY reject stage=pid");
+                }
                 link = eproc + kActiveProcessLinks;
                 continue;
             }
             auto cr3 = drv->read<uintptr_t>(eproc + kDirectoryTableBase) & ~0xFFFULL;
             if (!is_plausible_cr3(cr3)) {
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    sky::driver::write_state_log("attach=TRY reject stage=cr3");
+                }
                 link = eproc + kActiveProcessLinks;
                 continue;
             }
             auto peb = drv->read<uintptr_t>(eproc + kPeb);
             if (!peb || peb > 0x7FFFFFFFFFFFULL) {       // user-mode VA
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    sky::driver::write_state_log("attach=TRY reject stage=peb");
+                }
                 link = eproc + kActiveProcessLinks;
                 continue;
             }
@@ -223,6 +270,11 @@ namespace sky::game {
             drv->set_dir_base((void*)saved_dtb);
 
             if (!base || base > 0x7FFFFFFFFFFFULL || base < 0x10000) {
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    sky::driver::write_state_log("attach=TRY reject stage=base");
+                }
                 link = eproc + kActiveProcessLinks;
                 continue;
             }
@@ -232,6 +284,11 @@ namespace sky::game {
             bool pe_ok = verify_game_pe(base);
             drv->set_dir_base((void*)saved_dtb);
             if (!pe_ok) {
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    sky::driver::write_state_log("attach=TRY reject stage=pe");
+                }
                 link = eproc + kActiveProcessLinks;
                 continue;
             }

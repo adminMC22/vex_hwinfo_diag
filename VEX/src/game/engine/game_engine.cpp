@@ -164,15 +164,23 @@ namespace sky::game::engine {
             // blocks user-mode process/module enumeration on protected
             // processes. Retry every 2s so start order doesn't matter.
             static std::chrono::steady_clock::time_point s_last_attach{};
+            static int s_attempts = 0;
+            static int s_last_report = 0;
             auto now = std::chrono::steady_clock::now();
             if (now - s_last_attach >= std::chrono::seconds(2)) {
                 s_last_attach = now;
+                s_attempts++;
                 static const auto game_name = xorstr_("VALORANT-Win64");
                 sky::game::GameProcessInfo info;
                 if (sky::game::find_game_process(info, game_name)) {
                     sky::driver::g_driver->set_attached(info.pid, info.base);
                     m_kproc_cr3.store(info.cr3);          // skip re-walk
                     LOG_INFO("resolve_world: kernel attach OK");
+                } else if (s_attempts - s_last_report >= 10) {
+                    // Heartbeat every ~20s: proves the walk is alive while
+                    // waiting for the game.
+                    s_last_report = s_attempts;
+                    sky::driver::write_state_log("attach=TRY n=" + std::to_string(s_attempts));
                 }
                 game_base = sky::driver::g_driver->get_base_address();
             }
