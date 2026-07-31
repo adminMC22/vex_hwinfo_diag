@@ -11,6 +11,8 @@
 #include <iomanip>
 #include <algorithm>
 #include <map>
+#include <mutex>
+#include <format>
 
 #pragma comment(lib, "ntdll.lib")
 
@@ -405,20 +407,48 @@ namespace sky::driver {
     static uintptr_t s_kernel_pbase = 0;
     static bool s_kernel_offset_ready = false;
 
-    // Minimal diagnostics: append one line to %TEMP%\app.log.
-    // Only called on key init state changes; file is overwritten
-    // at process start. Kill switch wipes it on panic.
+    // Minimal diagnostics: append one line to %TEMP%\app.log AND to
+    // <exe dir>\app.log (users look next to the exe first). The log is
+    // wiped once per process start so each run is clean and self-evident.
+    // Kill switch wipes it on panic.
     void write_state_log(const std::string& line) {
+        static std::mutex s_log_mutex;
+        std::lock_guard<std::mutex> lock(s_log_mutex);
+
+        static bool s_log_reset = false;
         char tmp[MAX_PATH + 1] = { 0 };
         if (!GetTempPathA(MAX_PATH, tmp)) return;
-        std::string path = std::string(tmp) + "app.log";
-        HANDLE h = CreateFileA(path.c_str(), FILE_APPEND_DATA,
-            FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h == INVALID_HANDLE_VALUE) return;
+        std::string temp_path = std::string(tmp) + "app.log";
+
+        char exe[MAX_PATH + 1] = { 0 };
+        std::string exe_path;
+        if (GetModuleFileNameA(nullptr, exe, MAX_PATH)) {
+            std::string full(exe);
+            auto slash = full.find_last_of('\\');
+            if (slash != std::string::npos) {
+                exe_path = full.substr(0, slash + 1) + "app.log";
+            }
+        }
+
+        if (!s_log_reset) {
+            s_log_reset = true;
+            DeleteFileA(temp_path.c_str());
+            if (!exe_path.empty()) DeleteFileA(exe_path.c_str());
+        }
+
+        auto append = [](const std::string& path, const std::string& msg) {
+            if (path.empty()) return;
+            HANDLE h = CreateFileA(path.c_str(), FILE_APPEND_DATA,
+                FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h == INVALID_HANDLE_VALUE) return;
+            DWORD written = 0;
+            WriteFile(h, msg.c_str(), (DWORD)msg.size(), &written, nullptr);
+            CloseHandle(h);
+        };
+
         std::string msg = line + "\r\n";
-        DWORD written = 0;
-        WriteFile(h, msg.c_str(), (DWORD)msg.size(), &written, nullptr);
-        CloseHandle(h);
+        append(temp_path, msg);
+        append(exe_path, msg);
     }
 
     // Verify a candidate kernel physical base: read the PE header and

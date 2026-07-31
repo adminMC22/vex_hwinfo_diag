@@ -152,12 +152,24 @@ namespace sky::game::engine {
     }
 
     uintptr_t GameEngine::resolve_world_address() {
+        // VGK state is logged even when the game isn't attached yet, so
+        // app.log always shows the full chain for the current run.
+        auto pml4 = m_vgk->find_pml4_base();
+
         auto game_base = sky::driver::g_driver->get_base_address();
         if (!game_base) {
+            static bool s_logged = false;
+            if (!s_logged) {
+                s_logged = true;
+                sky::driver::write_state_log("attach=WAIT base=0");
+            }
             return 0;
         }
-
-        auto pml4 = m_vgk->find_pml4_base();
+        static bool s_attached_logged = false;
+        if (!s_attached_logged) {
+            s_attached_logged = true;
+            sky::driver::write_state_log("attach=OK base=0x" + std::format("{:x}", game_base));
+        }
 
         // ---- Build the CR3 candidate list: VGK clone first, then the real
         // CR3 from the EPROCESS list (immune to vgk.sys updates). ----
