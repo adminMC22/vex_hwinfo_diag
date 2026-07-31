@@ -158,16 +158,25 @@ namespace sky::game::engine {
 
         auto game_base = sky::driver::g_driver->get_base_address();
         if (!game_base) {
+            // Auto-attach: the overlay is useless without the game. Retry
+            // attach every 2s until VALORANT is up (start order agnostic).
+            static std::chrono::steady_clock::time_point s_last_attach{};
+            auto now = std::chrono::steady_clock::now();
+            if (now - s_last_attach >= std::chrono::seconds(2)) {
+                s_last_attach = now;
+                if (sky::driver::g_driver->attach_process(xorstr_("VALORANT-Win64-Shipping.exe"))) {
+                    LOG_INFO("resolve_world: attached to game");
+                }
+                game_base = sky::driver::g_driver->get_base_address();
+            }
             static bool s_logged = false;
             if (!s_logged) {
                 s_logged = true;
                 sky::driver::write_state_log("attach=WAIT base=0");
             }
-            return 0;
-        }
-        static bool s_attached_logged = false;
-        if (!s_attached_logged) {
-            s_attached_logged = true;
+            if (!game_base) {
+                return 0;
+            }
             sky::driver::write_state_log("attach=OK base=0x" + std::format("{:x}", game_base));
         }
 
