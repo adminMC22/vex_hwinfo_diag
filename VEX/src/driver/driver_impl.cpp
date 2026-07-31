@@ -685,6 +685,13 @@ namespace sky::driver {
             return true;
         }
 
+        void set_attached(uint32_t pid, uintptr_t base) override {
+            m_pid = pid;
+            m_base = base;
+            LOG_INFO("set_attached: pid=" + std::to_string(pid) + " base=0x" +
+                std::format("{:x}", base));
+        }
+
         uint32_t get_process_id() const override { return m_pid; }
         uintptr_t get_base_address() const override { return m_base; }
         uintptr_t get_dtb() const override { return m_dtb; }

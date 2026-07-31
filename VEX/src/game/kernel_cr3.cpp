@@ -148,4 +148,103 @@ namespace sky::game {
         return mz == 0x5A4D;                              // 'MZ'
     }
 
+    bool find_game_process(GameProcessInfo& out, const char* name_prefix) {
+        out = {};
+        if (!name_prefix) return false;
+        auto drv = sky::driver::g_driver;
+
+        auto psi_ptr = find_ntoskrnl_export("PsInitialSystemProcess");
+        if (!psi_ptr) return false;
+        auto sys_eproc = drv->read<uintptr_t>(psi_ptr);
+        if (!sys_eproc || sys_eproc < 0xFFFF000000000000ULL) return false;
+
+        // Win10 1904x EPROCESS layout
+        constexpr uintptr_t kUniqueProcessId    = 0x440;
+        constexpr uintptr_t kActiveProcessLinks = 0x448;
+        constexpr uintptr_t kDirectoryTableBase = 0x28;
+        constexpr uintptr_t kPeb                = 0x3B8;
+        constexpr uintptr_t kImageFileName      = 0x5A8;
+
+        // 8-byte prefix compare ("VALORANT-Win64" fits in the first 8 chars
+        // as "VALORANT"; full 14-byte compare below on candidate entries).
+        uint64_t want_first = 0;
+        for (int c = 0; c < 8 && name_prefix[c]; c++) {
+            want_first |= (uint64_t)(uint8_t)name_prefix[c] << (c * 8);
+        }
+
+        auto link = sys_eproc + kActiveProcessLinks;
+        for (int i = 0; i < 4096; i++) {
+            auto flink = drv->read<uintptr_t>(link);
+            if (!flink || flink < 0xFFFF000000000000ULL) return false;
+            auto eproc = flink - kActiveProcessLinks;
+            if (i > 0 && eproc == sys_eproc) break;      // wrapped around
+
+            // Cheap pre-filter: first 8 chars of the image name.
+            auto name_first = drv->read<uint64_t>(eproc + kImageFileName);
+            if (name_first != want_first) {
+                link = eproc + kActiveProcessLinks;
+                continue;
+            }
+            // Full prefix compare (chars 8..13).
+            auto name_rest = drv->read<uint64_t>(eproc + kImageFileName + 8);
+            bool match = true;
+            for (int c = 8; c < 14 && name_prefix[c]; c++) {
+                if ((uint8_t)(name_rest >> ((c - 8) * 8)) != (uint8_t)name_prefix[c]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (!match) {
+                link = eproc + kActiveProcessLinks;
+                continue;
+            }
+
+            auto pid = drv->read<uintptr_t>(eproc + kUniqueProcessId);
+            if (pid < 4 || pid > 0xFFFF) {
+                link = eproc + kActiveProcessLinks;
+                continue;
+            }
+            auto cr3 = drv->read<uintptr_t>(eproc + kDirectoryTableBase) & ~0xFFFULL;
+            if (!is_plausible_cr3(cr3)) {
+                link = eproc + kActiveProcessLinks;
+                continue;
+            }
+            auto peb = drv->read<uintptr_t>(eproc + kPeb);
+            if (!peb || peb > 0x7FFFFFFFFFFFULL) {       // user-mode VA
+                link = eproc + kActiveProcessLinks;
+                continue;
+            }
+
+            // ImageBaseAddress = PEB+0x10, read via the process's own CR3.
+            // Save and restore the caller's DTB so nothing else is disturbed.
+            auto saved_dtb = drv->get_dtb();
+            drv->set_dir_base((void*)cr3);
+            auto base = drv->read<uintptr_t>(peb + 0x10);
+            drv->set_dir_base((void*)saved_dtb);
+
+            if (!base || base > 0x7FFFFFFFFFFFULL || base < 0x10000) {
+                link = eproc + kActiveProcessLinks;
+                continue;
+            }
+            // Final gate: the PE header must be readable at base (MZ/PE)
+            // through this CR3.
+            drv->set_dir_base((void*)cr3);
+            bool pe_ok = verify_game_pe(base);
+            drv->set_dir_base((void*)saved_dtb);
+            if (!pe_ok) {
+                link = eproc + kActiveProcessLinks;
+                continue;
+            }
+
+            out.pid = (uint32_t)pid;
+            out.cr3 = cr3;
+            out.base = base;
+            LOG_INFO("kproc: game found pid=" + std::to_string(out.pid) +
+                " cr3=0x" + std::format("{:x}", cr3) +
+                " base=0x" + std::format("{:x}", base));
+            return true;
+        }
+        return false;
+    }
+
 } // namespace sky::game

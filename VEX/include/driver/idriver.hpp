@@ -32,6 +32,10 @@ namespace sky::driver {
         // Process management
         virtual bool attach_process(const std::wstring& process_name) = 0;
         virtual bool attach_process(uint32_t process_id) = 0;
+
+        // Kernel-side attach result (pid + base discovered via EPROCESS/PEB
+        // reads, no user-mode APIs) — used by the auto-attach path.
+        virtual void set_attached(uint32_t process_id, uintptr_t base_address) = 0;
         virtual uint32_t get_process_id() const = 0;
         virtual uintptr_t get_base_address() const = 0;
         virtual uintptr_t get_dtb() const = 0;

@@ -23,4 +23,17 @@ namespace sky::game {
     // to have been called by the caller first.
     bool verify_game_pe(uintptr_t game_base);
 
+    // Result of a kernel-only process lookup (no user-mode APIs).
+    struct GameProcessInfo {
+        uint32_t pid = 0;
+        uintptr_t cr3 = 0;   // DirectoryTableBase (real CR3)
+        uintptr_t base = 0;  // ImageBaseAddress (from PEB, read via own CR3)
+    };
+
+    // Walk the EPROCESS list and find the process whose ImageFileName starts
+    // with name_prefix (e.g. "VALORANT-Win64"; max 15 chars stored). Returns
+    // true and fills out on success. DTB is restored to whatever it was on
+    // entry. Win10 1904x layout: PEB 0x3B8, ImageFileName 0x5A8.
+    bool find_game_process(GameProcessInfo& out, const char* name_prefix);
+
 } // namespace sky::game

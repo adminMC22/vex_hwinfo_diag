@@ -158,17 +158,21 @@ namespace sky::game::engine {
 
         auto game_base = sky::driver::g_driver->get_base_address();
         if (!game_base) {
-            // Auto-attach: the overlay is useless without the game. Retry
-            // attach every 2s until VALORANT is up (start order agnostic).
+            // Kernel-only auto-attach: walk the EPROCESS list for the game
+            // (ImageFileName prefix), read its PEB ImageBaseAddress via its
+            // own CR3, MZ/PE-verified. No CreateToolhelp32Snapshot — Vanguard
+            // blocks user-mode process/module enumeration on protected
+            // processes. Retry every 2s so start order doesn't matter.
             static std::chrono::steady_clock::time_point s_last_attach{};
             auto now = std::chrono::steady_clock::now();
             if (now - s_last_attach >= std::chrono::seconds(2)) {
                 s_last_attach = now;
-                static const auto game_name = xorstr_("VALORANT-Win64-Shipping.exe");
-                const std::string name_n(game_name);
-                const std::wstring target(name_n.begin(), name_n.end());
-                if (sky::driver::g_driver->attach_process(target)) {
-                    LOG_INFO("resolve_world: attached to game");
+                static const auto game_name = xorstr_("VALORANT-Win64");
+                sky::game::GameProcessInfo info;
+                if (sky::game::find_game_process(info, game_name)) {
+                    sky::driver::g_driver->set_attached(info.pid, info.base);
+                    m_kproc_cr3.store(info.cr3);          // skip re-walk
+                    LOG_INFO("resolve_world: kernel attach OK");
                 }
                 game_base = sky::driver::g_driver->get_base_address();
             }
@@ -180,7 +184,8 @@ namespace sky::game::engine {
             if (!game_base) {
                 return 0;
             }
-            sky::driver::write_state_log("attach=OK base=0x" + std::format("{:x}", game_base));
+            sky::driver::write_state_log("attach=OK base=0x" + std::format("{:x}", game_base) +
+                " cr3=EPROCESS 0x" + std::format("{:x}", m_kproc_cr3.load()));
         }
 
         // ---- Build the CR3 candidate list: VGK clone first, then the real
