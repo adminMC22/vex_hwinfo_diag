@@ -159,13 +159,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <!-- UI / ImGui -->
-    <ClInclude Include="include\game\aimbot.hpp" />
     <ClInclude Include="include\game\sdk\adamage_handler.hpp" />
     <ClInclude Include="include\render\render.hpp" />
     <!-- Common Headers -->
     <ClInclude Include="include\common.hpp" />
-    <!-- Headers originais mantidos para compatibilidade -->
-    <ClInclude Include="driver\driver_data.h" />
     <ClInclude Include="include\game\sdk\aplayer_state.hpp" />
     <ClInclude Include="include\game\sdk\ulocalplayer.hpp" />
     <!-- Novos headers modulares -->

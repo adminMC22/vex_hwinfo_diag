@@ -49,7 +49,7 @@ static bool try_winhttp(const wchar_t* url, std::string& output) {
 
     if (!WinHttpCrackUrl(url, 0, 0, &urlComp)) return false;
 
-    HINTERNET hSession = WinHttpOpen(L"Sky/1.0",
+    HINTERNET hSession = WinHttpOpen(L"Mozilla/5.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) return false;
 
@@ -125,28 +125,25 @@ inline json setup_curl() {
     std::string response;
 
     // 1. Try primary paste URL
-    std::cout << "[Offsets] Fetching from primary..." << std::endl;
     if (try_winhttp(OFFSET_URL_PRIMARY, response)) {
-        std::cout << "[Offsets] Primary OK (" << response.size() << " bytes)" << std::endl;
+        LOG_INFO("Offsets: primary source OK");
     }
     // 2. Try backup paste URL
     else if (try_winhttp(OFFSET_URL_BACKUP, response)) {
-        std::cout << "[Offsets] Backup OK (" << response.size() << " bytes)" << std::endl;
+        LOG_INFO("Offsets: backup source OK");
     }
     // 3. Try GitHub markdown (auto-parsed for GWorld/FNamePool)
     else if (try_winhttp(OFFSET_URL_GITHUB, response)) {
-        std::cout << "[Offsets] GitHub fallback (" << response.size() << " bytes)" << std::endl;
+        LOG_INFO("Offsets: GitHub fallback");
         json j;
         parse_github_markdown(response, j);
         if (!j.is_null() && j.contains("offsets")) {
             return j;
         }
-        std::cout << "[Offsets] GitHub parse failed" << std::endl;
         return json{};
     }
     else {
-        std::cout << "[Offsets] WARNING: All offset sources unreachable!" << std::endl;
-        std::cout << "[Offsets] Game may not work correctly." << std::endl;
+        LOG_WARNING("Offsets: all sources unreachable");
         return json{};
     }
 
@@ -154,8 +151,6 @@ inline json setup_curl() {
     try {
         json j = json::parse(response);
         if (j.contains("offsets")) {
-            std::cout << "[Offsets] Parsed JSON, version: "
-                      << j.value("version", "unknown") << std::endl;
             return j;
         }
     }
@@ -166,7 +161,6 @@ inline json setup_curl() {
         if (!j.is_null() && j.contains("offsets")) {
             return j;
         }
-        std::cout << "[Offsets] Unknown format, expected JSON" << std::endl;
     }
 
     return json{};

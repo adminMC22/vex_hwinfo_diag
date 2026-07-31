@@ -37,7 +37,6 @@ void initialize()
     json json = setup_curl();
 
     if (json.is_null()) {
-        std::cout << "[Offsets] Using hardcoded defaults." << std::endl;
         return;
     }
 
@@ -101,22 +100,6 @@ void initialize()
     readValue(json["offsets"]["DamageSections"], DamageSections);
     readValue(json["offsets"]["CurrentEquippableVFXState"], CurrentEquippableVFXState);
     readValue(json["offsets"]["fresnel_intensity"], FresnelIntensity);
-
-    std::cout << "owning_game_instance: 0x" << std::hex << owning_game_instance << std::dec << std::endl;
-    std::cout << "game_state: 0x" << std::hex << game_state << std::dec << std::endl;
-    std::cout << "levels: 0x" << std::hex << levels << std::dec << std::endl;
-    std::cout << "local_players: 0x" << std::hex << local_players << std::dec << std::endl;
-    std::cout << "actor_array: 0x" << std::hex << actor_array << std::dec << std::endl;
-    std::cout << "viewport_client: 0x" << std::hex << viewport_client << std::dec << std::endl;
-    std::cout << "player_controller: 0x" << std::hex << player_controller << std::dec << std::endl;
-    std::cout << "acknowledged_pawn: 0x" << std::hex << acknowledged_pawn << std::dec << std::endl;
-    std::cout << "player_camera: 0x" << std::hex << player_camera << std::dec << std::endl;
-    std::cout << "control_rotation: 0x" << std::hex << control_rotation << std::dec << std::endl;
-    std::cout << "root_component: 0x" << std::hex << root_component << std::dec << std::endl;
-    std::cout << "damage_handler: 0x" << std::hex << damage_handler << std::dec << std::endl;
-    std::cout << "actor_id: 0x" << std::hex << actor_id << std::dec << std::endl;
-    std::cout << "fname_id: 0x" << std::hex << fname_id << std::dec << std::endl;
-    std::cout << "dormant: 0x" << std::hex << dormant << std::dec << std::endl;
 }
 
 } // namespace offsets

@@ -27,6 +27,9 @@ namespace sky::game {
 			data = sky::driver::g_driver->read<ShadowRegionsDataStructure>(sky::driver::g_driver->get_kernel_base("vgk.sys") + offsets::old_vgk::ShadowRegions);
 		}
 		auto decypted_cloned_cr3 = this->decrypt();
+		if (!decypted_cloned_cr3) {
+			LOG_WARNING("find_pml4_base: decrypt returned 0 (stale VGK offsets?)");
+		}
 		return { decypted_cloned_cr3, data.FreeIndex << 0x27 };
 	}
 

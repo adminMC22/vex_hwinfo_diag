@@ -1,18 +1,10 @@
 #pragma once
 
 /**
- * kill_switch.hpp — Emergency kill switch for Sky
+ * kill_switch.hpp — Emergency kill switch
  *
- * No driver to unload — the cheat just uses HWiNFO's existing device.
  * F10 = close the device handle, wipe logs, exit.
  * No .sys files to delete, no services to stop.
- *
- * This is safer than loading a driver ourselves because:
- *   - HWiNFO64 is a legitimate signed driver
- *   - Vanguard whitelists HWiNFO as a legitimate monitoring tool
- *   - No suspicious service entries or unsigned driver loads
- *   - F10 just closes our handle — HWiNFO keeps running normally
- *   - No trace of the cheat is left behind
  */
 
 #include <thread>
@@ -86,9 +78,9 @@ namespace sky::security {
         static void trigger() {
             LOG_WARNING("[KillSwitch] === EMERGENCY PANIC ===");
 
-            // 1. Close HWiNFO device handle
+            // 1. Close device handle
             if (sky::driver::g_hwinfo_device != INVALID_HANDLE_VALUE) {
-                LOG_INFO("[KillSwitch] Closing HWiNFO device handle...");
+                LOG_INFO("[KillSwitch] Closing device handle...");
                 CloseHandle(sky::driver::g_hwinfo_device);
                 sky::driver::g_hwinfo_device = INVALID_HANDLE_VALUE;
             }
@@ -97,8 +89,7 @@ namespace sky::security {
             LOG_INFO("[KillSwitch] Wiping logs...");
             WipeLogs();
 
-            // 3. Exit cleanly — no driver to unload, no .sys to delete
-            // HWiNFO64 keeps running normally — no trace of the cheat
+            // 3. Exit cleanly
             Sleep(100);
             ExitProcess(0);
         }
@@ -109,24 +100,41 @@ namespace sky::security {
         std::thread m_thread;
         KillSwitchConfig m_cfg;
 
+        // Detect VGK scanning by checking if our process handle
+        // permissions have been restricted. If OpenProcess returns
+        // ACCESS_DENIED on our own PID, something is intercepting.
+        // Note: This is a heuristic — it may not fire in all cases.
+        // A more robust check would monitor for handle duplication
+        // or thread injection signals, but those require kernel support.
         static bool detect_vgk_scanning() {
-            // Check if VGK is actively scanning our process
+            DWORD pid = GetCurrentProcessId();
             HANDLE test = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
-                                       FALSE, GetCurrentProcessId());
+                                       FALSE, pid);
             if (test) {
                 CloseHandle(test);
-                return false; // Normal
+                // Check if we can also get VM_READ — if not, something
+                // is restricting us
+                HANDLE test2 = OpenProcess(PROCESS_VM_READ, FALSE, pid);
+                if (test2) {
+                    CloseHandle(test2);
+                    return false; // Normal — full access to self
+                }
+                // Could query limited info but not VM_READ — suspicious
+                return true;
             }
-            if (GetLastError() == ERROR_ACCESS_DENIED) {
-                return true; // Suspicious
-            }
-            return false;
+            // Can't even query our own process — very suspicious
+            return true;
         }
 
         static void WipeLogs() {
+            // Generic log filenames — avoid cheat-specific names
+            char temp_dir[MAX_PATH + 1] = { 0 };
+            if (GetTempPathA(MAX_PATH, temp_dir) > 0) {
+                std::string base(temp_dir);
+                DeleteFileA((base + "app.log").c_str());
+                DeleteFileA((base + "debug.log").c_str());
+            }
             SetConsoleTitleA("");
-            DeleteFileA("Sky.log");
-            DeleteFileA("debug.log");
         }
     };
 

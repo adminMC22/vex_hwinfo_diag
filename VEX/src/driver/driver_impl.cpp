@@ -405,6 +405,22 @@ namespace sky::driver {
     static uintptr_t s_kernel_pbase = 0;
     static bool s_kernel_offset_ready = false;
 
+    // Minimal diagnostics: append one line to %TEMP%\app.log.
+    // Only called on key init state changes; file is overwritten
+    // at process start. Kill switch wipes it on panic.
+    static void write_state_log(const std::string& line) {
+        char tmp[MAX_PATH + 1] = { 0 };
+        if (!GetTempPathA(MAX_PATH, tmp)) return;
+        std::string path = std::string(tmp) + "app.log";
+        HANDLE h = CreateFileA(path.c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return;
+        std::string msg = line + "\r\n";
+        DWORD written = 0;
+        WriteFile(h, msg.c_str(), (DWORD)msg.size(), &written, nullptr);
+        CloseHandle(h);
+    }
+
     // Verify a candidate kernel physical base: read the PE header and
     // check SizeOfImage against ntoskrnl's size from the module list.
     // All reads are within the candidate's first 4KB, validated by
@@ -429,7 +445,7 @@ namespace sky::driver {
             uintptr_t diff = (uintptr_t)(size_of_image > expected_size
                 ? size_of_image - expected_size
                 : expected_size - size_of_image);
-            if (diff > 0x3000) return false;
+            if (diff > 0x300000) return false;  // 3MB tolerance for 2MB-section alignment
         }
         return true;
     }
@@ -504,12 +520,12 @@ namespace sky::driver {
             }
         }
 
-        // 2) Limited physical scan: [16MB, min(1GB, total_phys)] at 2MB steps.
+        // 2) Limited physical scan: [16MB, min(2GB, total_phys)] at 2MB steps.
         //    This is the range where the ntoskrnl image is loaded on Win10 x64.
         if (!found) {
-            LOG_INFO("kernel_phys_offset: heuristic miss, scanning [16MB..1GB) at 2MB...");
+            LOG_INFO("kernel_phys_offset: heuristic miss, scanning [16MB..2GB) at 2MB...");
             uint64_t scan_limit = get_total_phys();
-            if (scan_limit > 0x40000000ULL) scan_limit = 0x40000000ULL;
+            if (scan_limit > 0x80000000ULL) scan_limit = 0x80000000ULL;
             for (uintptr_t pa = 0x1000000; pa + 0x200000 <= scan_limit; pa += 0x200000) {
                 if (read_physical(pa, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
                     if (pe_matches(pa, ntk_size)) {
@@ -526,10 +542,13 @@ namespace sky::driver {
         if (!found) {
             LOG_WARNING("kernel_phys_offset: could not locate kernel in physical memory");
             LOG_WARNING("kernel scan: not found");
+            write_state_log("kernel_offset=FAIL");
             return false;
         }
 
         LOG_INFO("ntoskrnl physical: 0x" + std::format("{:x}", s_kernel_pbase));
+        write_state_log("kernel_offset=OK vbase=0x" + std::format("{:x}", s_kernel_vbase) +
+            " pbase=0x" + std::format("{:x}", s_kernel_pbase));
 
         // Final verification
         if (read_physical(s_kernel_pbase, verify, 2)) {

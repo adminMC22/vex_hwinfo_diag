@@ -3,8 +3,6 @@
 #include <include/utils/logger.hpp>
 #include <include/utils/config.hpp>
 #include <include/game/engine/game_engine.hpp>
-#include <include/game/aimbot.hpp>
-#include <include/game/triggerbot.hpp>
 #include <include/game/lineups.hpp>
 #include <include/driver/idriver.hpp>
 #include <include/render/render.hpp>
@@ -40,19 +38,16 @@ namespace sky::core {
                 sky::driver::g_driver = sky::driver::create_driver();
                 if (!sky::driver::g_driver) {
                     LOG_ERROR("Failed to create driver instance");
-                    MessageBoxA(0, xorstr_("Failed to create HWiNFO64 driver instance.\n\nMake sure HWiNFO64 is running.\nThis cheat uses HWiNFO64 as a sidecar driver."), xorstr_("Driver Error"), MB_OK | MB_ICONERROR);
+                    MessageBoxA(0, xorstr_("Failed to create driver instance."), xorstr_("Error"), MB_OK | MB_ICONERROR);
                     return false;
                 }
 
                 if (!sky::driver::g_driver->setup()) {
                     LOG_WARNING("Failed to setup driver");
                     MessageBoxA(0, xorstr_("Driver setup failed.\n\n"
-                        "Check the console window for detailed diagnostics.\n\n"
-                        "Most common fix:\n"
-                        "1. Run HWiNFO64 as Admin\n"
-                        "2. Keep HWiNFO64 running\n"
-                        "3. Run Sky.exe as Admin"),
-                        xorstr_("Sky Driver"), MB_OK | MB_ICONERROR);
+                        "Make sure the driver is loaded.\n"
+                        "Run as Administrator."),
+                        xorstr_("Error"), MB_OK | MB_ICONERROR);
                     return false;
                 }
 
@@ -66,7 +61,7 @@ namespace sky::core {
                 ks_cfg.auto_wipe_logs = true;
                 ks_cfg.enable_vgk_monitor = true;
                 sky::security::g_killSwitch.arm(ks_cfg);
-                LOG_INFO("[Sky] Kill switch armed (F10)");
+                LOG_INFO("[app] Kill switch armed (F10)");
 
                 // Increase timer resolution to allow sleeps < 15.6ms
                 //timeBeginPeriod(1);
@@ -229,9 +224,6 @@ namespace sky::core {
                 if (health <= 0.f)
                     continue;
 
-                sky::game::aimbot::m_aimbot->try_select_target(actor.actor, bones);
-				sky::game::triggerbot::m_triggerbot->run(actor.actor, bones, skeleton);
-
                 // Calculate more precise model bounds
                 float HeadToNeck = bones[1].Y - bones[0].Y;
 
@@ -357,7 +349,6 @@ namespace sky::core {
                     );
                 }
             }
-            sky::game::aimbot::m_aimbot->run();
         }
 
         ImU32 draw_spike_timer_bar(double time_remaining, double defuse_progress, int32_t defuse_section) {
@@ -913,23 +904,22 @@ namespace sky::core {
                     continue;
                 }
                 try {
-                    if (!FindWindowA("VALORANTUnrealWindow", NULL)) {
-                        ExitProcess(0);
+                    // Check if game window exists — don't ExitProcess
+                    // immediately, just skip rendering if not found.
+                    // The game might not be focused or might be loading.
+                    static DWORD last_check = 0;
+                    DWORD now = GetTickCount();
+                    static bool game_found = false;
+                    if (now - last_check > 2000) {  // check every 2s
+                        last_check = now;
+                        HWND hGame = FindWindowA(xorstr_("VALORANTUnrealWindow"), NULL);
+                        game_found = (hGame != nullptr);
                     }
+                    // Continue rendering regardless — overlay works
+                    // even without the game window (for menu interaction)
 
                     if (sky::render::m_render) {
                         sky::render::m_render->begin();
-
-                        if (var->config.aimbot.draw_fov) {
-                            // Draw FOV Circle
-                            sky::render::m_render->DrawCircle(
-                                ImVec2(sky::render::m_render->Width / 2, sky::render::m_render->Height / 2),
-                                var->config.aimbot.fov,
-                                IM_COL32(255, 255, 255, 255), // White color
-                                30, // Line thickness
-                                1.0f
-                            );
-                        }
 
                         draw_players();
                         draw_skills();

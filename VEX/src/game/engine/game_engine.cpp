@@ -134,10 +134,10 @@ namespace sky::game::engine {
     }
 
     SkillsData GameEngine::get_skills_data() const {
-        if (m_actors_data_mutex.try_lock())
+        if (m_skills_data_mutex.try_lock())
         {
             SkillsData copy = m_skills_data;
-            m_actors_data_mutex.unlock();
+            m_skills_data_mutex.unlock();
             return copy;
         }
         return {};
@@ -159,6 +159,10 @@ namespace sky::game::engine {
             // driver's read_memory() now refuses to treat user VAs as
             // physical addresses, so failing here is safe — no garbage
             // pointer can reach the kernel driver.
+            return 0;
+        }
+        if (!pml4.DecryptedClonedCr3) {
+            LOG_WARNING("resolve_world: cloned CR3 is 0 — cannot page-walk game memory");
             return 0;
         }
 
