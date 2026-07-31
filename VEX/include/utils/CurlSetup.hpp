@@ -21,6 +21,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <nlohmann/json.hpp>
+#include "utils/logger.hpp"
 
 using json = nlohmann::json;
 
