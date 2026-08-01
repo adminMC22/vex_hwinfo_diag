@@ -24,6 +24,15 @@ namespace sky::driver {
     public:
         virtual ~IDriver() = default;
 
+        // Raw physical read. Required for phys-scan attach (finding the
+        // game's EPROCESS without kernel-pool VA translation). Default
+        // implementation returns false; drivers that expose physical I/O
+        // override it.
+        virtual bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
+            (void)phys_addr; (void)buffer; (void)size;
+            return false;
+        }
+
         // Setup and management
         virtual bool setup() = 0;
         virtual void unload() = 0;

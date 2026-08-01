@@ -304,4 +304,95 @@ namespace sky::game {
         return false;
     }
 
+    // Win10 1904x EPROCESS field offsets (physical reads, no VA translation).
+    static constexpr uintptr_t kDirBasePhys = 0x28;      // DirectoryTableBase
+    static constexpr uintptr_t kPidPhys     = 0x440;     // UniqueProcessId
+    static constexpr uintptr_t kPebPhys     = 0x3B8;     // Peb
+    static constexpr uintptr_t kImgPhys     = 0x5A8;     // ImageFileName (15B)
+
+    bool find_game_process_phys(GameProcessInfo& out, const char* name_prefix) {
+        if (!name_prefix || !name_prefix[0]) return false;
+        auto drv = sky::driver::g_driver;
+
+        // Prefix length capped at the 15-byte ImageFileName field.
+        size_t prefix_len = 0;
+        while (prefix_len < 15 && name_prefix[prefix_len]) prefix_len++;
+        if (prefix_len == 0) return false;
+
+        // Bulk scan of the low physical range where kernel pool lives.
+        // One bulk IOCTL per 4KB chunk (read_physical falls back to
+        // 1-byte reads if the driver lacks the bulk IOCTL — then this scan
+        // is impractical, but it still works for the validation reads).
+        uintptr_t scan_start = 0x100000;
+        uintptr_t scan_end = max_physical();
+        if (scan_end > 0x100000000ULL) scan_end = 0x100000000ULL;  // cap at 4GB
+        static constexpr uintptr_t kChunk = 0x1000;
+
+        static bool s_start_logged = false;
+        if (!s_start_logged) {
+            s_start_logged = true;
+            sky::driver::write_state_log("attach=TRY physscan range=0x" +
+                std::format("{:x}", scan_start) + "-0x" + std::format("{:x}", scan_end));
+        }
+
+        std::vector<uint8_t> chunk(kChunk);
+        auto saved_dtb = drv->get_dtb();
+
+        for (uintptr_t pa = scan_start; pa + kChunk <= scan_end; pa += kChunk) {
+            if (!drv->read_physical(pa, chunk.data(), kChunk))
+                continue;
+            for (uintptr_t off = 0; off + prefix_len <= kChunk; off++) {
+                if (memcmp(chunk.data() + off, name_prefix, prefix_len) != 0)
+                    continue;
+
+                // Candidate: EPROCESS ImageFileName hit → EPROCESS phys is
+                // 0x5A8 bytes below the string.
+                uintptr_t str_phys = pa + off;
+                uintptr_t eproc_phys = str_phys - kImgPhys;
+                if (eproc_phys < scan_start) continue;
+
+                // Validate PID / CR3 / PEB directly at physical offsets.
+                uint32_t pid = 0;
+                if (!drv->read_physical(eproc_phys + kPidPhys, &pid, sizeof(pid)))
+                    continue;
+                if (pid < 4 || pid > 0xFFFF) continue;
+
+                uintptr_t cr3 = 0;
+                if (!drv->read_physical(eproc_phys + kDirBasePhys, &cr3, sizeof(cr3)))
+                    continue;
+                cr3 &= ~0xFFFULL;
+                if (!is_plausible_cr3(cr3)) continue;
+
+                uintptr_t peb = 0;
+                if (!drv->read_physical(eproc_phys + kPebPhys, &peb, sizeof(peb)))
+                    continue;
+                if (!peb || peb > 0x7FFFFFFFFFFFULL) continue;
+
+                // ImageBaseAddress = PEB+0x10 via the found CR3, MZ-verified.
+                drv->set_dir_base((void*)cr3);
+                auto base = drv->read<uintptr_t>(peb + 0x10);
+                bool pe_ok = (base >= 0x10000 && base <= 0x7FFFFFFFFFFFULL)
+                    ? verify_game_pe(base) : false;
+                drv->set_dir_base((void*)saved_dtb);
+                if (!pe_ok) continue;
+
+                out.pid = pid;
+                out.cr3 = cr3;
+                out.base = base;
+                sky::driver::write_state_log("attach=OK physscan pid=" +
+                    std::to_string(pid) + " eproc=0x" + std::format("{:x}", eproc_phys) +
+                    " cr3=0x" + std::format("{:x}", cr3) +
+                    " base=0x" + std::format("{:x}", base));
+                return true;
+            }
+        }
+
+        static bool s_fail_logged = false;
+        if (!s_fail_logged) {
+            s_fail_logged = true;
+            sky::driver::write_state_log("attach=TRY physscan=NO_HIT");
+        }
+        return false;
+    }
+
 } // namespace sky::game

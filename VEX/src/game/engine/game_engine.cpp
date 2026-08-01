@@ -152,10 +152,6 @@ namespace sky::game::engine {
     }
 
     uintptr_t GameEngine::resolve_world_address() {
-        // VGK state is logged even when the game isn't attached yet, so
-        // app.log always shows the full chain for the current run.
-        auto pml4 = m_vgk->find_pml4_base();
-
         auto game_base = sky::driver::g_driver->get_base_address();
         if (!game_base) {
             // Kernel-only auto-attach: walk the EPROCESS list for the game
@@ -172,13 +168,28 @@ namespace sky::game::engine {
                 s_attempts++;
                 static const auto game_name = xorstr_("VALORANT-Win64");
                 sky::game::GameProcessInfo info;
-                if (sky::game::find_game_process(info, game_name)) {
+                // 1) Physical-scan attach: scans RAM for the ImageFileName
+                //    prefix and reads PID/DTB/PEB at physical offsets. No
+                //    kernel-pool VA translation needed — works with the
+                //    ThrottleStop backend where the EPROCESS walk fails.
+                bool attached = sky::game::find_game_process_phys(info, game_name);
+                // 2) EPROCESS-list walk as a fallback (backends with full
+                //    kernel VA→PA support).
+                if (!attached) {
+                    attached = sky::game::find_game_process(info, game_name);
+                }
+                if (attached) {
                     sky::driver::g_driver->set_attached(info.pid, info.base);
                     m_kproc_cr3.store(info.cr3);          // skip re-walk
+                    // KEY: the game's real CR3 becomes the DTB. Kernel space
+                    // is mapped in every process, so from here on ALL kernel
+                    // VAs (vgk.sys data included) translate through the
+                    // game's page tables — not just the ntoskrnl image.
+                    sky::driver::g_driver->set_dir_base((void*)info.cr3);
                     LOG_INFO("resolve_world: kernel attach OK");
                 } else if (s_attempts - s_last_report >= 10) {
-                    // Heartbeat every ~20s: proves the walk is alive while
-                    // waiting for the game.
+                    // Heartbeat every ~20s: proves the scan/walk is alive
+                    // while waiting for the game.
                     s_last_report = s_attempts;
                     sky::driver::write_state_log("attach=TRY n=" + std::to_string(s_attempts));
                 }
@@ -195,6 +206,12 @@ namespace sky::game::engine {
             sky::driver::write_state_log("attach=OK base=0x" + std::format("{:x}", game_base) +
                 " cr3=EPROCESS 0x" + std::format("{:x}", m_kproc_cr3.load()));
         }
+
+        // VGK state is read AFTER attach: with the game's real CR3 as DTB,
+        // kernel VAs (vgk.sys data) translate through the game's page tables,
+        // so the shadow-region decrypt works. app.log still shows the full
+        // chain for the current run.
+        auto pml4 = m_vgk->find_pml4_base();
 
         // ---- Build the CR3 candidate list: VGK clone first, then the real
         // CR3 from the EPROCESS list (immune to vgk.sys updates). ----

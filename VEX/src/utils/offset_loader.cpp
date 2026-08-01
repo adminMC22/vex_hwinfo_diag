@@ -33,11 +33,34 @@ namespace offsets {
 
 void initialize()
 {
-    // Offsets streaming without a json file in disk
-    json json = setup_curl();
-
+    // Prefer a local offsets.json next to the exe: deterministic, and the
+    // shipped file is always kept in sync with offsets.hpp. The remote paste
+    // URL is only used as a fallback when the local file is missing.
+    // (A stale paste must never silently override newer code defaults.)
+    json json = nullptr;
+    char exe[MAX_PATH + 1] = { 0 };
+    if (GetModuleFileNameA(nullptr, exe, MAX_PATH)) {
+        std::string path(exe);
+        auto slash = path.find_last_of('\\');
+        if (slash != std::string::npos) {
+            std::string local = path.substr(0, slash + 1) + "offsets.json";
+            std::ifstream f(local);
+            if (f.good()) {
+                std::stringstream ss;
+                ss << f.rdbuf();
+                try {
+                    json = json::parse(ss.str());
+                } catch (...) {
+                    json = nullptr;
+                }
+            }
+        }
+    }
     if (json.is_null()) {
-        return;
+        json = setup_curl();  // remote fallback
+    }
+    if (json.is_null()) {
+        return;  // keep code defaults
     }
 
     // GitHub markdown source writes these under json["offsets"]["GWorld"] etc.

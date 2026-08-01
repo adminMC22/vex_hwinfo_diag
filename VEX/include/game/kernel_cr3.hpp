@@ -36,4 +36,15 @@ namespace sky::game {
     // entry. Win10 1904x layout: PEB 0x3B8, ImageFileName 0x5A8.
     bool find_game_process(GameProcessInfo& out, const char* name_prefix);
 
+    // Physical-scan attach: no kernel-pool VA translation required (the
+    // ThrottleStop backend's phys offset only maps the ntoskrnl image, so
+    // EPROCESS-list reads fail). Instead: bulk-scan physical RAM for the
+    // ImageFileName prefix, derive EPROCESS_phys = str_phys - 0x5A8, and
+    // read PID / DirectoryTableBase / PEB directly at physical offsets
+    // (0x440 / 0x28 / 0x3B8). The ImageBaseAddress is then read through the
+    // found CR3 and MZ-verified. Uses g_driver->read_physical() — must be
+    // implemented by the backend (bulk IOCTL). DTB is restored on exit.
+    // Returns false if the game is not found or validation fails.
+    bool find_game_process_phys(GameProcessInfo& out, const char* name_prefix);
+
 } // namespace sky::game

@@ -296,6 +296,11 @@ namespace sky::driver {
     // IOCTL codes:
     // #define THROTTLE_IOCTL CTL_CODE(FILE_DEVICE_UNKNOWN, 0x6498, METHOD_BUFFERED, FILE_READ_ACCESS)
     #define TS_IOCTL_READ 0x80006498
+    // Bulk physical read (RTCore64-style buffered IOCTL; the ThrottleStop
+    // driver family also implements it).
+    //   Input : struct { UINT64 phys_addr; UINT32 size; }   (12 bytes)
+    //   Output: the requested bytes (Method::Buffered)
+    #define TS_IOCTL_READ_BULK 0x9C40258C
 
     static uint64_t s_total_phys = 0;
 
@@ -325,12 +330,51 @@ namespace sky::driver {
         return true;
     }
 
+    // Single bulk IOCTL read. Callers must validate pa/size first.
+    static bool read_physical_bulk(uintptr_t phys_addr, void* buffer, size_t size) {
+        if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
+        if (size == 0 || size > 0x10000) return false;  // keep IOCTL buffers sane
+
+        struct { uint64_t phys; uint32_t len; } in = { (uint64_t)phys_addr, (uint32_t)size };
+        DWORD returned = 0;
+        BOOL ok = DeviceIoControl(g_hwinfo_device, TS_IOCTL_READ_BULK,
+            &in, sizeof(in), buffer, (DWORD)size, &returned, nullptr);
+        if (!ok) return false;
+        return returned == size;
+    }
+
+    // Bulk capability is probed once with a tiny read of the first page
+    // (real-mode IVT / BIOS area — always present and safe to read).
+    static bool s_bulk_probed = false;
+    static bool s_bulk_ok = false;
+
+    static bool bulk_read_supported() {
+        if (!s_bulk_probed) {
+            s_bulk_probed = true;
+            uint8_t probe[0x10] = { 0 };
+            s_bulk_ok = pa_valid(0x1000, sizeof(probe))
+                && read_physical_bulk(0x1000, probe, sizeof(probe));
+            LOG_INFO(s_bulk_ok ? "bulk read IOCTL: supported"
+                               : "bulk read IOCTL: NOT supported (1-byte fallback)");
+        }
+        return s_bulk_ok;
+    }
+
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
         if (!pa_valid(phys_addr, size)) return false;
 
         // === ThrottleStop backend ===
         if (g_backend == BACKEND_THROTTLESTOP) {
+            // Multi-byte reads: use the bulk IOCTL when available (probed
+            // once). This is what makes physical scans feasible — the
+            // 1-byte path below would take hours over a multi-GB range.
+            if (size > 1 && bulk_read_supported()) {
+                if (read_physical_bulk(phys_addr, buffer, size))
+                    return true;
+                // Bulk failed for this range; fall through to the 1-byte
+                // loop so small cross-range reads still work.
+            }
             uint8_t* dst = (uint8_t*)buffer;
             size_t remaining = size;
             uintptr_t addr = phys_addr;
@@ -695,6 +739,10 @@ namespace sky::driver {
         uint32_t get_process_id() const override { return m_pid; }
         uintptr_t get_base_address() const override { return m_base; }
         uintptr_t get_dtb() const override { return m_dtb; }
+
+        bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) override {
+            return ::sky::driver::read_physical(phys_addr, buffer, size);
+        }
 
         bool move_mouse(uint32_t, uint32_t, uint16_t) override { return false; }
 
