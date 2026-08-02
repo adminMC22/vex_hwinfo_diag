@@ -514,28 +514,6 @@ namespace sky::driver {
     }
 
     // ============================================================
-    // Attach-bootstrap helpers (used by the PML4 scan)
-    // ============================================================
-    bool kernel_image_offset(uintptr_t* vbase, uintptr_t* pbase) {
-        if (!s_kernel_offset_ready && !init_kernel_phys_offset())
-            return false;
-        if (!s_kernel_vbase || !s_kernel_pbase) return false;
-        if (vbase) *vbase = s_kernel_vbase;
-        if (pbase) *pbase = s_kernel_pbase;
-        return true;
-    }
-
-    // Self-verifying PML4 test: walk the KNOWN kernel image VA through the
-    // candidate page table and require phys == known image PA. A random pool
-    // page cannot pass this — it is a full 4-level walk with a known answer.
-    bool verify_pml4_for_kernel(uintptr_t pml4_pa, uintptr_t vbase, uintptr_t pbase) {
-        if (!pml4_pa || !vbase || !pbase) return false;
-        if (pml4_pa & 0xFFF) return false;                 // must be page-aligned
-        uintptr_t phys = translate_virtual(vbase, pml4_pa);
-        return phys == pbase;
-    }
-
-    // ============================================================
     // Kernel virtual → physical translation via physical scan
     // ============================================================
     // RTCore64 only reads physical addresses. To read kernel virtual
@@ -733,6 +711,28 @@ namespace sky::driver {
             LOG_WARNING("ntoskrnl verification: read_physical failed at derived address");
         }
         return true;
+    }
+
+    // ============================================================
+    // Attach-bootstrap helpers (used by the PML4 scan)
+    // ============================================================
+    bool kernel_image_offset(uintptr_t* vbase, uintptr_t* pbase) {
+        if (!s_kernel_offset_ready && !init_kernel_phys_offset())
+            return false;
+        if (!s_kernel_vbase || !s_kernel_pbase) return false;
+        if (vbase) *vbase = s_kernel_vbase;
+        if (pbase) *pbase = s_kernel_pbase;
+        return true;
+    }
+
+    // Self-verifying PML4 test: walk the KNOWN kernel image VA through the
+    // candidate page table and require phys == known image PA. A random pool
+    // page cannot pass this — it is a full 4-level walk with a known answer.
+    bool verify_pml4_for_kernel(uintptr_t pml4_pa, uintptr_t vbase, uintptr_t pbase) {
+        if (!pml4_pa || !vbase || !pbase) return false;
+        if (pml4_pa & 0xFFF) return false;                 // must be page-aligned
+        uintptr_t phys = translate_virtual(vbase, pml4_pa);
+        return phys == pbase;
     }
 
     static uintptr_t kernel_va_to_pa(uintptr_t va) {
