@@ -430,20 +430,49 @@ namespace sky::driver {
     // ============================================================
     // VA -> PA translation (4-level page walk)
     // ============================================================
+    // Per-stage failure logging for translate_virtual — one-shot per stage
+    // + value, so the next app.log pinpoints exactly which step of the page
+    // walk returns garbage (which has been the silent killer).
+    static std::mutex s_walk_log_mtx;
+    static uintptr_t s_walk_logged = 0;       // bitmask of stages already logged
+    static void walk_log(unsigned stage, uintptr_t a, uintptr_t b) {
+        std::lock_guard<std::mutex> lock(s_walk_log_mtx);
+        if (s_walk_logged & (1u << stage)) return;
+        s_walk_logged |= (1u << stage);
+        std::string msg = "attach=TRY walk_fail stage=" + std::to_string(stage) +
+            " a=0x" + std::format("{:x}", a) +
+            " b=0x" + std::format("{:x}", b);
+        write_state_log(msg);
+    }
+
     static uintptr_t translate_virtual(uintptr_t vaddr, uintptr_t dirbase) {
+        if (!dirbase) { walk_log(0, vaddr, dirbase); return 0; }
+
         uintptr_t pml4e = 0, pml4i = (vaddr >> 39) & 0x1FF;
-        if (!read_physical(dirbase + pml4i * 8, &pml4e, 8) || !(pml4e & 1)) return 0;
+        if (!read_physical(dirbase + pml4i * 8, &pml4e, 8) || !(pml4e & 1)) {
+            walk_log(1, dirbase + pml4i * 8, pml4e);
+            return 0;
+        }
 
         uintptr_t pdpte = 0, pdpti = (vaddr >> 30) & 0x1FF;
-        if (!read_physical((pml4e & PAGE_MASK_4KB) + pdpti * 8, &pdpte, 8) || !(pdpte & 1)) return 0;
+        if (!read_physical((pml4e & PAGE_MASK_4KB) + pdpti * 8, &pdpte, 8) || !(pdpte & 1)) {
+            walk_log(2, (pml4e & PAGE_MASK_4KB) + pdpti * 8, pdpte);
+            return 0;
+        }
         if (pdpte & (1 << 7)) return (pdpte & PAGE_MASK_1GB) | (vaddr & 0x3FFFFFFF);
 
         uintptr_t pde = 0, pdi = (vaddr >> 21) & 0x1FF;
-        if (!read_physical((pdpte & PAGE_MASK_4KB) + pdi * 8, &pde, 8) || !(pde & 1)) return 0;
+        if (!read_physical((pdpte & PAGE_MASK_4KB) + pdi * 8, &pde, 8) || !(pde & 1)) {
+            walk_log(3, (pdpte & PAGE_MASK_4KB) + pdi * 8, pde);
+            return 0;
+        }
         if (pde & (1 << 7)) return (pde & PAGE_MASK_2MB) | (vaddr & 0x1FFFFF);
 
         uintptr_t pte = 0, pti = (vaddr >> 12) & 0x1FF;
-        if (!read_physical((pde & PAGE_MASK_4KB) + pti * 8, &pte, 8) || !(pte & 1)) return 0;
+        if (!read_physical((pde & PAGE_MASK_4KB) + pti * 8, &pte, 8) || !(pte & 1)) {
+            walk_log(4, (pde & PAGE_MASK_4KB) + pti * 8, pte);
+            return 0;
+        }
         return (pte & PAGE_MASK_4KB) | (vaddr & 0xFFF);
     }
 
