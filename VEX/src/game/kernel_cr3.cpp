@@ -197,7 +197,7 @@ namespace sky::game {
         const uintptr_t kPdi   = (kvbase >> 21) & 0x1FF;  // 0x163
         const uintptr_t kPti   = (kvbase >> 12) & 0x1FF;  // 0 for 2MB-aligned vbase (4KB fallback)
 
-        sky::driver::write_state_log("attach=TRY pml4_reverse pml4i=0x" +
+        sky::driver::write_state_log("attach=TRY build=rev4k pml4_reverse pml4i=0x" +
             std::format("{:x}", kPml4i) + " pdpti=0x" + std::format("{:x}", kPdpti) +
             " pdi=0x" + std::format("{:x}", kPdi) + " pti=0x" + std::format("{:x}", kPti) +
             " img=0x" + std::format("{:x}", kpbase));
@@ -205,14 +205,22 @@ namespace sky::game {
         // Tiered scan ranges: boot page tables are allocated in the first
         // MBs (the boot allocator hands out the lowest pages first), so we
         // hit them in tier 0/1 almost always. Extend only on miss.
+        //
+        // HARD CAP 0x1A000000 (416MB): the user's machine raises a machine
+        // check (WHEA_UNCORRECTABLE_ERROR) on physical reads somewhere in
+        // 427-428MB (observed 0x124 BSOD mid-scan). Every tier is clamped to
+        // this ceiling — scanning above it is not an option on this box.
         static constexpr uintptr_t kRanges[][2] = {
             { 0x100000,  0x800000 },   // 1MB-8MB
             { 0x800000,  0x4000000 },  // 8MB-64MB
             { 0x4000000, 0x10000000 }, // 64MB-256MB
-            { 0x10000000, 0x40000000 },// 256MB-1GB
+            { 0x10000000, 0x1A000000 },// 256MB-416MB (capped: BSOD zone above)
         };
         uintptr_t cap = max_physical();
-        if (cap > 0x40000000ULL) cap = 0x40000000ULL;
+        if (cap > 0x1A000000ULL) cap = 0x1A000000ULL;
+        sky::driver::write_state_log("attach=TRY pml4_rev cap=0x" +
+            std::format("{:x}", cap) + " total=0x" +
+            std::format("{:x}", max_physical()));
 
         auto heartbeat = [](const char* stage, uintptr_t pa, uintptr_t end) {
             static std::chrono::steady_clock::time_point s_last;
@@ -261,8 +269,9 @@ namespace sky::game {
                     uint64_t e = 0;
                     if (!read_entry(pa, kPdi * 8, kpbase, e)) continue;
                     // 2MB large page: PS bit + full frame bits 21-51 must
-                    // equal the image frame. (ntoskrnl is always mapped
-                    // with 2MB pages on Win10/11 x64 — bootloader default.)
+                    // equal the image frame. (ntoskrnl is usually mapped
+                    // with 2MB pages; under VBS/HVCI it can be 4KB-mapped
+                    // instead — handled by the fallback pass below.)
                     if ((e & 1ULL << 7) && (e & 0x000FFFFFFFE00000ULL) == frame2m) {
                         pd_page = pa;
                         sky::driver::write_state_log("attach=TRY pml4_rev pd=0x" +
@@ -271,6 +280,53 @@ namespace sky::game {
                     }
                 }
                 if (pd_page) break;
+            }
+
+            // 4KB fallback: Vanguard REQUIRES VBS/HVCI, and under HVCI the
+            // kernel image is frequently mapped with 4KB pages — PDE[pdi]
+            // then has no PS bit and the 2MB pass can never match. Find the
+            // PT page first (PTE[pti] frame == image frame), then the PD
+            // page whose PDE[pdi] points at that PT page. Both steps use the
+            // same frame prefilter, so read cost is unchanged per page.
+            if (!pd_page) {
+                sky::driver::write_state_log("attach=TRY pml4_rev step=pd4k");
+                uintptr_t pt_page = 0;
+                for (auto& r : kRanges) {
+                    if (r[0] > cap) break;
+                    uintptr_t end = std::min(r[1], cap);
+                    for (uintptr_t pa = r[0]; pa + 0x1000 <= end; pa += 0x1000) {
+                        heartbeat("pt", pa, end);
+                        uint64_t t = 0;
+                        if (!read_entry(pa, kPti * 8, kpbase, t)) continue;
+                        if ((t & 0x000FFFFFFFFFF000ULL) != (kpbase & 0x000FFFFFFFFFF000ULL))
+                            continue;
+                        pt_page = pa;
+                        sky::driver::write_state_log("attach=TRY pml4_rev pt=0x" +
+                            std::format("{:x}", pt_page));
+                        break;
+                    }
+                    if (pt_page) break;
+                }
+                if (!pt_page) {
+                    sky::driver::write_state_log("kernel_pml4_rev=NO_PT4K");
+                    LOG_WARNING("pml4 reverse: no 4KB PT page mapping the kernel image found");
+                    return 0;
+                }
+                for (auto& r : kRanges) {
+                    if (r[0] > cap) break;
+                    uintptr_t end = std::min(r[1], cap);
+                    for (uintptr_t pa = r[0]; pa + 0x1000 <= end; pa += 0x1000) {
+                        heartbeat("pd", pa, end);
+                        uint64_t e = 0;
+                        if (!read_entry(pa, kPdi * 8, pt_page, e)) continue;
+                        if ((e & 0x000FFFFFFFFFF000ULL) != pt_page) continue;
+                        pd_page = pa;
+                        sky::driver::write_state_log("attach=TRY pml4_rev pd=0x" +
+                            std::format("{:x}", pd_page) + " (4KB)");
+                        break;
+                    }
+                    if (pd_page) break;
+                }
             }
         }
         if (!pd_page) {

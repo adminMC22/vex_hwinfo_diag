@@ -736,11 +736,38 @@ namespace sky::driver {
     // Self-verifying PML4 test: walk the KNOWN kernel image VA through the
     // candidate page table and require phys == known image PA. A random pool
     // page cannot pass this — it is a full 4-level walk with a known answer.
+    //
+    // SAFETY BOUND: this box machine-checks (WHEA 0x124) on physical reads
+    // above ~0x1A000000 (416MB). Every table address the walk touches must
+    // stay below that ceiling, or the candidate is rejected instead of read.
     bool verify_pml4_for_kernel(uintptr_t pml4_pa, uintptr_t vbase, uintptr_t pbase) {
         if (!pml4_pa || !vbase || !pbase) return false;
         if (pml4_pa & 0xFFF) return false;                 // must be page-aligned
-        uintptr_t phys = translate_virtual(vbase, pml4_pa);
-        return phys == pbase;
+        constexpr uintptr_t kSafeCeil = 0x1A000000ULL;     // BSOD zone is above
+
+        uintptr_t addr = pml4_pa + ((vbase >> 39) & 0x1FF) * 8;   // PML4E
+        for (int level = 0; level < 4; level++) {
+            if (addr >= kSafeCeil) return false;           // never read past ceiling
+            uint64_t e = 0;
+            if (!read_physical(addr, &e, 8) || !(e & 1))
+                return false;
+            if (level == 0) {
+                addr = (e & PAGE_MASK_4KB) + ((vbase >> 30) & 0x1FF) * 8; // PDPT
+            } else if (level == 1) {
+                if (e & (1 << 7)) {                        // 1GB page
+                    return ((e & PAGE_MASK_1GB) | (vbase & 0x3FFFFFFF)) == pbase;
+                }
+                addr = (e & PAGE_MASK_4KB) + ((vbase >> 21) & 0x1FF) * 8; // PD
+            } else if (level == 2) {
+                if (e & (1 << 7)) {                        // 2MB page
+                    return ((e & PAGE_MASK_2MB) | (vbase & 0x1FFFFF)) == pbase;
+                }
+                addr = (e & PAGE_MASK_4KB) + ((vbase >> 12) & 0x1FF) * 8; // PT
+            } else {
+                return ((e & PAGE_MASK_4KB) | (vbase & 0xFFF)) == pbase;  // 4KB page
+            }
+        }
+        return false;
     }
 
     static uintptr_t kernel_va_to_pa(uintptr_t va) {
