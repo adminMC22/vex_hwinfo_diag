@@ -29,24 +29,30 @@ namespace sky::game {
     // (PML4E[0x1ED], PTE_BASE 0xFFFFF68000000000) points to the page
     // itself. See the declaration in kernel_cr3.hpp for the rationale.
     // Two passes: 1MB-64MB, then 64MB-256MB if the first misses.
-    // Scan low physical RAM for a PML4 page. Two-stage filter optimized for
-    // the 1-byte backend: pre-filter every 4KB page by reading 2 bytes at
-    // page+6 (high 2 bytes of PML4E[0]); a kernel PML4's entry 0 has its
-    // high 16 bits = 0xFFFF (canonical kernel-space VA). Then verify each
-    // candidate by scanning all 512 entries for one that points to the page
-    // itself — the self-referencing entry is randomized per-boot on
-    // Win10/11, so we can't assume a fixed index.
+    // Scan low physical RAM for the SYSTEM process PML4 page. The System
+    // (PID 4) PML4 has unique traits vs. user process PML4s:
+    //   - empty user half (PML4E[0..255] all zero) — System has no user VA.
+    //   - kernel half populated, including PML4E[0x1F0]/[0x1F8] (the ranges
+    //     that map ntoskrnl.exe itself — required for the export walk to
+    //     work on the page we pick).
+    // Filter pipeline, all 1-byte-friendly:
+    //   page+6 (high 2 bytes of PML4E[0]) must NOT be 0xFFFF (otherwise a
+    //     user PML4 with random high bits would pass).
+    //   The kernel half first entry PML4E[256] (=page+2048) must be a
+    //     canonical kernel VA (high 16 = 0xFFFF) and present.
+    //   The SYSTEM-PML4 gate: read 2 user-half entries; both must be 0.
+    //   Then verify the self-referencing entry (scanning all 512 indices).
+    //   Finally reject if PML4E[0x1F0] (the entry used to read ntoskrnl)
+    //     is absent — so we can't pick a PML4 the export walk can't use.
     uintptr_t find_kernel_pml4() {
         auto drv = sky::driver::g_driver;
         uintptr_t scan_start = 0x100000;
-        uintptr_t pass_end = 0x10000000;                    // 256MB — covers both
-                                                            // passes in one go
-                                                            // (~5 min @ 1B/IOCTL)
+        uintptr_t pass_end = 0x10000000;                    // 256MB
+
         static std::chrono::steady_clock::time_point s_last_prog{};
 
         for (uintptr_t pa = scan_start; pa + 0x1000 <= pass_end; pa += 0x1000) {
-            // Progress heartbeat (~every 4s) so app.log shows the scan
-            // moving instead of looking hung on the 1-byte backend.
+            // Progress heartbeat (~every 4s).
             auto pnow = std::chrono::steady_clock::now();
             if (pnow - s_last_prog >= std::chrono::seconds(4)) {
                 s_last_prog = pnow;
@@ -55,40 +61,53 @@ namespace sky::game {
                     "/0x" + std::format("{:x}", pass_end));
             }
 
-            // Pre-filter: 2-byte read at page+6 = high 2 bytes of PML4E[0].
-            // A kernel PML4 page has the kernel half populated, so entry 0
-            // is a canonical kernel VA (high 16 = 0xFFFF). Random pool/user
-            // pages almost never have 0x0000 or 0xFFFF at this position.
-            uint16_t hi16 = 0;
-            if (!drv->read_physical(pa + 6, &hi16, sizeof(hi16)))
+            // Kernel-half populated check: high 2 bytes of PML4E[256]
+            // (page + 2048 + 6). A System PML4 has its kernel half filled
+            // with canonical kernel VAs.
+            uint16_t k_hi16 = 0;
+            if (!drv->read_physical(pa + 2048 + 6, &k_hi16, sizeof(k_hi16)))
                 continue;
-            if (hi16 != 0xFFFF) continue;
+            if (k_hi16 != 0xFFFF) continue;
 
-            // Verify: scan all 512 entries for one that points to this page.
-            // The self-referencing entry's physical frame bits == this page.
-            // 8 reads/entry x 512 = 4K IOCTLs per candidate — but only on
-            // the handful of pages that passed the pre-filter.
-            bool found = false;
+            // Empty-user-half gate: read 2 of PML4E[0..N]; System has all
+            // these zero. (User processes have at least one DLL mapped in
+            // the low user half, so PML4E[0] is almost always non-zero.)
+            uint64_t u0 = 0, u1 = 0;
+            if (!drv->read_physical(pa + 0, &u0, sizeof(u0))) continue;
+            if (!drv->read_physical(pa + 8, &u1, sizeof(u1))) continue;
+            if (u0 != 0 || u1 != 0) continue;
+
+            // Find the self-referencing entry (frame bits == this page).
+            uintptr_t self_idx = 0;
+            bool self_found = false;
             for (uintptr_t idx = 0; idx < 512; idx++) {
                 uintptr_t entry = 0;
                 if (!drv->read_physical(pa + idx * 8, &entry, sizeof(entry)))
                     continue;
                 if (!(entry & 1)) continue;            // not present
                 if ((entry & 0xFFFFFFFFFFFFF000ULL) != pa) continue;
-                // Could be kernel half or user half pointing to itself.
-                // Also accept the low dword test below.
-                sky::driver::write_state_log("kernel_pml4=0x" +
-                    std::format("{:x}", pa) +
-                    " idx=0x" + std::format("{:x}", idx));
-                LOG_INFO("kernel PML4 found at phys=0x" + std::format("{:x}", pa) +
-                    " self_idx=0x" + std::format("{:x}", idx));
-                found = true;
+                self_idx = idx;
+                self_found = true;
                 break;
             }
-            if (found) return pa;
+            if (!self_found) continue;
+
+            // Final gate: PML4E[0x1F0] (where ntoskrnl.exe mappings live)
+            // must be present — the export walk depends on it.
+            uintptr_t e1F0 = 0;
+            if (!drv->read_physical(pa + 0x1F0 * 8, &e1F0, sizeof(e1F0)))
+                continue;
+            if (!(e1F0 & 1)) continue;
+
+            sky::driver::write_state_log("kernel_pml4=0x" +
+                std::format("{:x}", pa) +
+                " idx=0x" + std::format("{:x}", self_idx));
+            LOG_INFO("kernel PML4 found at phys=0x" + std::format("{:x}", pa) +
+                " self_idx=0x" + std::format("{:x}", self_idx));
+            return pa;
         }
         sky::driver::write_state_log("kernel_pml4=NOT_FOUND");
-        LOG_WARNING("find_kernel_pml4: no self-referencing PML4 in low RAM");
+        LOG_WARNING("find_kernel_pml4: no System PML4 in low RAM");
         return 0;
     }
 
