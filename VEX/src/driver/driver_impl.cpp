@@ -407,6 +407,14 @@ namespace sky::driver {
                     &val, sizeof(val),            // output: 1 byte
                     &returned, nullptr);
 
+                // Transient IOCTL failures happen on the TS driver (seen in
+                // the wild as intermittent b=0 walk failures at valid RAM
+                // addresses). Retry ONCE on failure only — the normal path
+                // is untouched, so detection shape is unchanged.
+                if (!ok && GetLastError() != ERROR_SUCCESS) {
+                    ok = DeviceIoControl(g_hwinfo_device, TS_IOCTL_READ,
+                        &ts_addr, sizeof(ts_addr), &val, sizeof(val), &returned, nullptr);
+                }
                 if (!ok) {
                     LOG_ERROR("TS read IOCTL failed at phys=0x" +
                         std::format("{:x}", addr) + " GLE=" + std::to_string(GetLastError()));

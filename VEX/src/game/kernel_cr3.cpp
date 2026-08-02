@@ -77,6 +77,7 @@ namespace sky::game {
             { 0x4000000, 0x10000000 }, // 64MB-256MB
         };
         static std::chrono::steady_clock::time_point s_last_prog{};
+        static int s_rejected = 0;
 
         for (int range = 0; range < 3; range++) {
             uintptr_t scan_start = kRanges[range][0];
@@ -114,11 +115,10 @@ namespace sky::game {
                 // Stage B: SELF-VERIFY — walk the kernel image VA through
                 // this candidate. Only a real PML4 maps it to the known PA.
                 if (!sky::driver::verify_pml4_for_kernel(pa, kvbase, kpbase)) {
-                    // Log once per range: the candidate LOOKED like an entry
-                    // but failed the walk — proves the verification runs.
-                    static bool s_rej_logged = false;
-                    if (!s_rej_logged) {
-                        s_rej_logged = true;
+                    // Log once (first reject) with the count — proves the
+                    // verification runs and shows how noisy the filter is.
+                    s_rejected++;
+                    if (s_rejected == 1) {
                         sky::driver::write_state_log("attach=TRY pml4_verify_reject pa=0x" +
                             std::format("{:x}", pa));
                     }
