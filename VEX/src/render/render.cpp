@@ -1,5 +1,6 @@
 #include <include/render/render.hpp>
 #include <include/driver/driver_context.hpp>
+#include <include/utils/logger.hpp>
 
 // Win32 helper for ImGui backend
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -38,39 +39,63 @@ namespace sky::render {
             Height = static_cast<int>(dm.dmPelsHeight);
         }
 
-        do
-        {
-            // Try Valorant game window first (Unreal Engine window)
+        // Acquire a target window. The ESP renders at screen coordinates, so
+        // the overlay works both attached to the game window and as a
+        // standalone fullscreen window. Never fatal: retry for ~20s (the
+        // game may start after Sky.exe) and fall back to our own window.
+        static const char* overlay_classes[] = {
+            "Windows.UI.Core.CoreWindow",            // spoofed system-ish name
+            "Windows.UI.Composition.ContentBridge",  // spoofed system-ish name
+            "SkyOverlay",                            // guaranteed private class
+        };
+
+        for (int attempt = 0; attempt < 10 && !hWnd; attempt++) {
+            // 1) Valorant window (UnrealWindow class + UE title with padding)
             hWnd = FindWindowA(xorstr_("UnrealWindow"), xorstr_("VALORANT  "));
-            if (hWnd)
+            if (hWnd) {
+                LOG_INFO(std::format("overlay: game window 0x{:x}", (uintptr_t)hWnd));
                 break;
+            }
 
-            // Fallback: any Unreal Engine window
-            hWnd = FindWindowA(xorstr_("UnrealWindow"), nullptr);
-            if (hWnd)
-                break;
-
-            // Last resort: create our own transparent overlay window
+            // 2) Own transparent overlay. Note: "Windows.UI.Core.CoreWindow"
+            //    is a REAL system class on Win10/11 — RegisterClassExA fails
+            //    for it (ignored) and CreateWindowExA then fails too, which
+            //    is why the old single-name fallback died with
+            //    "Failed to create overlay window" when the game was down.
             WNDCLASSEXA wc = { sizeof(WNDCLASSEXA) };
             wc.style = CS_HREDRAW | CS_VREDRAW;
             wc.lpfnWndProc = DefWindowProcA;
             wc.hInstance = GetModuleHandleA(nullptr);
-            wc.lpszClassName = xorstr_("Windows.UI.Core.CoreWindow");
-            RegisterClassExA(&wc);
+            for (auto cls : overlay_classes) {
+                wc.lpszClassName = cls;
+                if (!RegisterClassExA(&wc) && GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+                    continue;  // real system class (or duplicate) — try next name
+                }
+                hWnd = CreateWindowExA(
+                    WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+                    cls, cls,
+                    WS_POPUP,
+                    0, 0, (int)Width, (int)Height,
+                    nullptr, nullptr, wc.hInstance, nullptr
+                );
+                if (hWnd) {
+                    LOG_INFO(std::format("overlay: own window 0x{:x}", (uintptr_t)hWnd));
+                    break;
+                }
+            }
 
-            hWnd = CreateWindowExA(
-                WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
-                xorstr_("Windows.UI.Core.CoreWindow"), xorstr_("Windows.UI.Core.CoreWindow"),
-                WS_POPUP,
-                0, 0, (int)Width, (int)Height,
-                nullptr, nullptr, wc.hInstance, nullptr
-            );
-        } while (false);
+            if (!hWnd) {
+                Sleep(2000);  // retry — the game may not be up yet
+            }
+        }
 
         if (!hWnd) {
-            MessageBoxA(0, xorstr_("Failed to create overlay window."), xorstr_("Error"), MB_OK | MB_ICONERROR);
-            ExitProcess(0);
-            return false;
+            LOG_ERROR("Failed to create overlay window");
+            MessageBoxA(0, xorstr_("Failed to create overlay window.\n\n"
+                "Neither the Valorant window nor the fallback overlay could be created.\n"
+                "Start Valorant first, then run Sky.exe."),
+                xorstr_("Error"), MB_OK | MB_ICONERROR);
+            return false;  // do not ExitProcess — the caller handles cleanup
         }
 
         SetMenu(hWnd, 0);
