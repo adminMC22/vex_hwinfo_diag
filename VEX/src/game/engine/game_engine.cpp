@@ -184,7 +184,13 @@ namespace sky::game::engine {
                     if (!s_pml4_tried) {
                         s_pml4_tried = true;
                         sky::driver::write_state_log("attach=TRY kernel_pml4_scan");
-                        auto pml4 = sky::game::find_kernel_pml4();
+                        // Primary: REVERSE-WALK — derive the PML4 from the
+                        // kernel image's own page-table chain (deterministic;
+                        // each step is a known-value scan). Fallback: the
+                        // content-matching scan.
+                        uintptr_t pml4 = sky::game::find_kernel_pml4_reverse();
+                        if (!pml4)
+                            pml4 = sky::game::find_kernel_pml4();
                         if (pml4) {
                             sky::driver::g_driver->set_dir_base((void*)pml4);
                             sky::driver::write_state_log("kernel_pml4=0x" + std::format("{:x}", pml4));

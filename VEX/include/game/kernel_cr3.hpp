@@ -47,6 +47,16 @@ namespace sky::game {
     // ~64MB, extending to 256MB in a second pass if needed).
     uintptr_t find_kernel_pml4();
 
+    // REVERSE-WALK bootstrap (deterministic): derive the PML4 from the
+    // kernel image's own page-table chain. We KNOW ntoskrnl's vbase and
+    // pbase (kernel_image_offset) — so the PD page containing PDE[pdi]
+    // with frame == pbase (2MB large page, PS bit) MUST exist, and the
+    // PDPT page whose PDPTE[pdpti] points to it, and the PML4 whose
+    // PML4E[pml4i] points to that. Each step is a KNOWN-value scan, not
+    // content matching. Final full-walk verification. Tiered scan
+    // 1MB→8MB→64MB→256MB→1GB. Returns the PML4 physical address, or 0.
+    uintptr_t find_kernel_pml4_reverse();
+
     // Physical-scan attach: no kernel-pool VA translation required (the
     // ThrottleStop backend's phys offset only maps the ntoskrnl image, so
     // EPROCESS-list reads fail). Instead: bulk-scan physical RAM for the

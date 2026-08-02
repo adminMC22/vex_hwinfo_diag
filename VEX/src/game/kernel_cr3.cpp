@@ -152,6 +152,204 @@ namespace sky::game {
         return 0;
     }
 
+    // ================================================================
+    // REVERSE-WALK bootstrap (the deterministic one)
+    // ================================================================
+    // Instead of content-matching random pages (which 100+ runs proved
+    // keeps hitting kernel POOL pages), DERIVE the PML4 from the kernel
+    // image's own page-table chain — the CPU runs on these tables, so the
+    // chain MUST exist:
+    //
+    //   We know: kvbase=0xfffff8052c600000, kpbase=0x3000000
+    //   pml4i = (kvbase>>39)&0x1FF = 0x1F0
+    //   pdpti = (kvbase>>30)&0x1FF = 0x14
+    //   pdi   = (kvbase>>21)&0x1FF = 0x163
+    //
+    //   Step 1: find the PD page — scan phys for a page P where
+    //           P[pdi*8] (offset 0xB18) is a present 2MB large-page
+    //           entry (PS bit) whose frame == kpbase. The kernel image
+    //           is mapped with 2MB pages on modern Windows, and this
+    //           entry is FORCED — no guessing.
+    //   Step 2: find the PDPT page — scan phys for a page Q where
+    //           Q[pdpti*8] (offset 0xA0) is a present entry whose
+    //           frame == P (the PD page from step 1).
+    //   Step 3: find the PML4 — scan phys for a page R where
+    //           R[pml4i*8] (offset 0xF80) is a present entry whose
+    //           frame == Q. R IS the kernel PML4 (or any process PML4 —
+    //           they share the kernel half).
+    //   Step 4: final self-verification via the full known-answer walk.
+    //
+    // Each step's frame value is KNOWN, so a single 8-byte comparison
+    // per page is decisive. False positives are impossible in step 1
+    // (the frame must equal kpbase exactly, with PS present) and are
+    // re-verified by steps 2-4 anyway.
+    uintptr_t find_kernel_pml4_reverse() {
+        auto drv = sky::driver::g_driver;
+
+        uintptr_t kvbase = 0, kpbase = 0;
+        if (!sky::driver::kernel_image_offset(&kvbase, &kpbase)) {
+            sky::driver::write_state_log("kernel_pml4_rev=NO_IMAGE");
+            return 0;
+        }
+
+        const uintptr_t kPml4i = (kvbase >> 39) & 0x1FF;  // 0x1F0
+        const uintptr_t kPdpti = (kvbase >> 30) & 0x1FF;  // 0x14
+        const uintptr_t kPdi   = (kvbase >> 21) & 0x1FF;  // 0x163
+        const uintptr_t kPti   = (kvbase >> 12) & 0x1FF;  // 0 for 2MB-aligned vbase (4KB fallback)
+
+        sky::driver::write_state_log("attach=TRY pml4_reverse pml4i=0x" +
+            std::format("{:x}", kPml4i) + " pdpti=0x" + std::format("{:x}", kPdpti) +
+            " pdi=0x" + std::format("{:x}", kPdi) + " pti=0x" + std::format("{:x}", kPti) +
+            " img=0x" + std::format("{:x}", kpbase));
+
+        // Tiered scan ranges: boot page tables are allocated in the first
+        // MBs (the boot allocator hands out the lowest pages first), so we
+        // hit them in tier 0/1 almost always. Extend only on miss.
+        static constexpr uintptr_t kRanges[][2] = {
+            { 0x100000,  0x800000 },   // 1MB-8MB
+            { 0x800000,  0x4000000 },  // 8MB-64MB
+            { 0x4000000, 0x10000000 }, // 64MB-256MB
+            { 0x10000000, 0x40000000 },// 256MB-1GB
+        };
+        uintptr_t cap = max_physical();
+        if (cap > 0x40000000ULL) cap = 0x40000000ULL;
+
+        auto heartbeat = [](const char* stage, uintptr_t pa, uintptr_t end) {
+            static std::chrono::steady_clock::time_point s_last;
+            auto now = std::chrono::steady_clock::now();
+            if (now - s_last >= std::chrono::seconds(4)) {
+                s_last = now;
+                sky::driver::write_state_log("attach=TRY pml4_rev " +
+                    std::string(stage) + " at=0x" + std::format("{:x}", pa) +
+                    "/0x" + std::format("{:x}", end));
+            }
+        };
+
+        // Read a 64-bit table entry with a low-dword prefilter (4-byte
+        // reads = 4 IOCTLs + 1 jitter sleep vs 8+1 for a full read).
+        auto read_entry = [&](uintptr_t pa, uintptr_t off, uint64_t& out) -> bool {
+            uint32_t lo = 0;
+            if (!drv->read_physical(pa + off, &lo, sizeof(lo)))
+                return false;
+            if (!(lo & 1)) return false;                 // present bit
+            uint32_t hi = 0;
+            if (!drv->read_physical(pa + off + 4, &hi, sizeof(hi)))
+                return false;
+            if (hi != 0 && hi != 0x80000000) return false; // phys < 4GB (+NX)
+            out = (uint64_t)hi << 32 | lo;
+            return true;
+        };
+
+        // ---- Step 1: find the PD page (PDE[pdi] maps the kernel image) ----
+        uintptr_t pd_page = 0;
+        {
+            const uintptr_t frame2m = kpbase & 0x000FFFFFFFE00000ULL;  // bits 21-51
+            sky::driver::write_state_log("attach=TRY pml4_rev step=pd want=0x" +
+                std::format("{:x}", kpbase));
+            for (auto& r : kRanges) {
+                if (r[0] > cap) break;
+                uintptr_t end = std::min(r[1], cap);
+                for (uintptr_t pa = r[0]; pa + 0x1000 <= end; pa += 0x1000) {
+                    heartbeat("pd", pa, end);
+                    uint64_t e = 0;
+                    if (!read_entry(pa, kPdi * 8, e)) continue;
+                    // 2MB large page: frame bits 21-51 must equal image frame
+                    if ((e & 1ULL << 7) && (e & 0x000FFFFFFFE00000ULL) == frame2m) {
+                        pd_page = pa;
+                        sky::driver::write_state_log("attach=TRY pml4_rev pd=0x" +
+                            std::format("{:x}", pd_page) + " (2MB)");
+                        break;
+                    }
+                    // 4KB page: PDE frame = PT page phys (bits 12-51); we
+                    // remember it and validate the PT page after the scan.
+                    if (!(e & 1ULL << 7) && (e & 0x000FFFFFFFFFF000ULL) >= 0x100000) {
+                        uintptr_t pt_phys = e & 0x000FFFFFFFFFF000ULL;
+                        uint64_t pte = 0;
+                        if (read_entry(pt_phys, kPti * 8, pte) &&
+                            (pte & 0x000FFFFFFFFFF000ULL) == (kpbase & 0x000FFFFFFFFFF000ULL)) {
+                            pd_page = pa;
+                            sky::driver::write_state_log("attach=TRY pml4_rev pd=0x" +
+                                std::format("{:x}", pd_page) + " (4KB)");
+                            break;
+                        }
+                    }
+                }
+                if (pd_page) break;
+            }
+        }
+        if (!pd_page) {
+            sky::driver::write_state_log("kernel_pml4_rev=NO_PD");
+            LOG_WARNING("pml4 reverse: no PD page with kernel image mapping found");
+            return 0;
+        }
+
+        // ---- Step 2: find the PDPT page (PDPTE[pdpti] frame == pd_page) ----
+        uintptr_t pdpt_page = 0;
+        {
+            sky::driver::write_state_log("attach=TRY pml4_rev step=pdpt want=0x" +
+                std::format("{:x}", pd_page));
+            for (auto& r : kRanges) {
+                if (r[0] > cap) break;
+                uintptr_t end = std::min(r[1], cap);
+                for (uintptr_t pa = r[0]; pa + 0x1000 <= end; pa += 0x1000) {
+                    heartbeat("pdpt", pa, end);
+                    uint64_t e = 0;
+                    if (!read_entry(pa, kPdpti * 8, e)) continue;
+                    if ((e & 0x000FFFFFFFFFF000ULL) != pd_page) continue;
+                    pdpt_page = pa;
+                    sky::driver::write_state_log("attach=TRY pml4_rev pdpt=0x" +
+                        std::format("{:x}", pdpt_page));
+                    break;
+                }
+                if (pdpt_page) break;
+            }
+        }
+        if (!pdpt_page) {
+            sky::driver::write_state_log("kernel_pml4_rev=NO_PDPT");
+            LOG_WARNING("pml4 reverse: no PDPT page pointing to PD page found");
+            return 0;
+        }
+
+        // ---- Step 3: find the PML4 (PML4E[pml4i] frame == pdpt_page) ----
+        uintptr_t pml4_page = 0;
+        {
+            sky::driver::write_state_log("attach=TRY pml4_rev step=pml4 want=0x" +
+                std::format("{:x}", pdpt_page));
+            for (auto& r : kRanges) {
+                if (r[0] > cap) break;
+                uintptr_t end = std::min(r[1], cap);
+                for (uintptr_t pa = r[0]; pa + 0x1000 <= end; pa += 0x1000) {
+                    heartbeat("pml4", pa, end);
+                    uint64_t e = 0;
+                    if (!read_entry(pa, kPml4i * 8, e)) continue;
+                    if ((e & 0x000FFFFFFFFFF000ULL) != pdpt_page) continue;
+                    pml4_page = pa;
+                    sky::driver::write_state_log("attach=TRY pml4_rev pml4=0x" +
+                        std::format("{:x}", pml4_page));
+                    break;
+                }
+                if (pml4_page) break;
+            }
+        }
+        if (!pml4_page) {
+            sky::driver::write_state_log("kernel_pml4_rev=NO_PML4");
+            LOG_WARNING("pml4 reverse: no PML4 page pointing to PDPT page found");
+            return 0;
+        }
+
+        // ---- Step 4: final self-verification (full known-answer walk) ----
+        if (!sky::driver::verify_pml4_for_kernel(pml4_page, kvbase, kpbase)) {
+            sky::driver::write_state_log("kernel_pml4_rev=VERIFY_FAIL");
+            LOG_WARNING("pml4 reverse: derived PML4 failed the final walk — chain broken");
+            return 0;
+        }
+        sky::driver::write_state_log("kernel_pml4=0x" +
+            std::format("{:x}", pml4_page) + " VERIFIED (reverse)");
+        LOG_INFO("kernel PML4 found via REVERSE WALK at phys=0x" +
+            std::format("{:x}", pml4_page));
+        return pml4_page;
+    }
+
     // One-shot state-log line for the exact stage where the ntoskrnl export
     // parse bailed, with the values that caused it — makes the next app.log
     // diagnostic without more guessing.
