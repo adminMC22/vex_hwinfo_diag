@@ -319,29 +319,58 @@ namespace sky::game {
         while (prefix_len < 15 && name_prefix[prefix_len]) prefix_len++;
         if (prefix_len == 0) return false;
 
-        // Bulk scan of the low physical range where kernel pool lives.
-        // One bulk IOCTL per 4KB chunk (read_physical falls back to
-        // 1-byte reads if the driver lacks the bulk IOCTL — then this scan
-        // is impractical, but it still works for the validation reads).
         uintptr_t scan_start = 0x100000;
-        uintptr_t scan_end = max_physical();
-        if (scan_end > 0x100000000ULL) scan_end = 0x100000000ULL;  // cap at 4GB
-        static constexpr uintptr_t kChunk = 0x1000;
+        uintptr_t full_end = max_physical();
+        if (full_end > 0x100000000ULL) full_end = 0x100000000ULL;  // cap at 4GB
+        // Two-stage range: kernel pool (EPROCESS) almost always lives below
+        // 2GB on typical machines, so the first pass is fast. Only if that
+        // misses do later passes extend to the full range.
+        static bool s_stage2 = false;
+        uintptr_t scan_end = s_stage2 ? full_end : std::min(full_end, 0x80000000ULL);
 
-        static bool s_start_logged = false;
-        if (!s_start_logged) {
-            s_start_logged = true;
+        // Log the range whenever it changes (first pass + stage-2 pass).
+        static uintptr_t s_logged_end = 0;
+        if (s_logged_end != scan_end) {
+            s_logged_end = scan_end;
             sky::driver::write_state_log("attach=TRY physscan range=0x" +
                 std::format("{:x}", scan_start) + "-0x" + std::format("{:x}", scan_end));
         }
 
-        std::vector<uint8_t> chunk(kChunk);
-        auto saved_dtb = drv->get_dtb();
+        // 1-byte-only backend: a multi-GB scan would take hours. Bail out
+        // fast so the EPROCESS walk fallback (and the rest of the engine)
+        // still runs.
+        size_t chunk_size = drv->max_bulk_chunk();
+        if (chunk_size == 0) {
+            static bool s_no_bulk = false;
+            if (!s_no_bulk) {
+                s_no_bulk = true;
+                sky::driver::write_state_log("attach=TRY physscan=NO_BULK driver");
+            }
+            return false;
+        }
+        if (chunk_size > 0x10000) chunk_size = 0x10000;
 
-        for (uintptr_t pa = scan_start; pa + kChunk <= scan_end; pa += kChunk) {
-            if (!drv->read_physical(pa, chunk.data(), kChunk))
+        // Overlap chunks by (prefix_len-1) bytes so an ImageFileName
+        // straddling a chunk boundary is never missed.
+        const size_t step = chunk_size - (prefix_len - 1);
+
+        // Don't rescan more often than every 10s — a full pass takes
+        // seconds and we don't want to pin the engine thread while the
+        // game isn't up.
+        static std::chrono::steady_clock::time_point s_last_scan{};
+        auto s_now = std::chrono::steady_clock::now();
+        if (s_now - s_last_scan < std::chrono::seconds(10))
+            return false;
+        s_last_scan = s_now;
+
+        std::vector<uint8_t> chunk(chunk_size);
+        auto saved_dtb = drv->get_dtb();
+        static std::chrono::steady_clock::time_point s_last_prog{};
+
+        for (uintptr_t pa = scan_start; pa + chunk_size <= scan_end; pa += step) {
+            if (!drv->read_physical(pa, chunk.data(), chunk_size))
                 continue;
-            for (uintptr_t off = 0; off + prefix_len <= kChunk; off++) {
+            for (uintptr_t off = 0; off + prefix_len <= chunk_size; off++) {
                 if (memcmp(chunk.data() + off, name_prefix, prefix_len) != 0)
                     continue;
 
@@ -385,8 +414,20 @@ namespace sky::game {
                     " base=0x" + std::format("{:x}", base));
                 return true;
             }
+
+            // Progress heartbeat (~every 4s) so app.log shows the scan
+            // moving instead of looking hung.
+            auto pnow = std::chrono::steady_clock::now();
+            if (pnow - s_last_prog >= std::chrono::seconds(4)) {
+                s_last_prog = pnow;
+                sky::driver::write_state_log("attach=TRY physscan 0x" +
+                    std::format("{:x}", pa) + "/0x" + std::format("{:x}", scan_end));
+            }
         }
 
+        if (!s_stage2 && scan_end < full_end) {
+            s_stage2 = true;  // stage-1 pass missed — extend next pass to full range
+        }
         static bool s_fail_logged = false;
         if (!s_fail_logged) {
             s_fail_logged = true;

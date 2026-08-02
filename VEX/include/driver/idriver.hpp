@@ -26,12 +26,14 @@ namespace sky::driver {
 
         // Raw physical read. Required for phys-scan attach (finding the
         // game's EPROCESS without kernel-pool VA translation). Default
-        // implementation returns false; drivers that expose physical I/O
-        // override it.
-        virtual bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
-            (void)phys_addr; (void)buffer; (void)size;
-            return false;
-        }
+        // implementation returns false; drivers that expose physical
+        // memory reads override it.
+        virtual bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) { return false; }
+
+        // Largest chunk the backend can physically read in one call
+        // (0 = only 1-byte reads). The phys-scan attach uses this to pick
+        // the fastest feasible scan stride.
+        virtual size_t max_bulk_chunk() const { return 0; }
 
         // Setup and management
         virtual bool setup() = 0;

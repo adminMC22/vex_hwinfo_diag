@@ -343,21 +343,27 @@ namespace sky::driver {
         return returned == size;
     }
 
-    // Bulk capability is probed once with a tiny read of the first page
-    // (real-mode IVT / BIOS area — always present and safe to read).
+    // Bulk capability is probed once with reads of the first page (real-mode
+    // IVT / BIOS area — always present and safe). We discover the LARGEST
+    // chunk the driver accepts: 64KB when available (4GB scan = 65K IOCTLs,
+    // ~seconds), else 4KB (1M IOCTLs, ~a minute), else only 1-byte reads.
     static bool s_bulk_probed = false;
-    static bool s_bulk_ok = false;
+    static size_t s_bulk_max = 0;  // 0 = bulk unsupported
 
-    static bool bulk_read_supported() {
+    static size_t bulk_max_chunk() {
         if (!s_bulk_probed) {
             s_bulk_probed = true;
-            uint8_t probe[0x10] = { 0 };
-            s_bulk_ok = pa_valid(0x1000, sizeof(probe))
-                && read_physical_bulk(0x1000, probe, sizeof(probe));
-            LOG_INFO(s_bulk_ok ? "bulk read IOCTL: supported"
-                               : "bulk read IOCTL: NOT supported (1-byte fallback)");
+            std::vector<uint8_t> probe(0x10000);
+            if (pa_valid(0x1000, 0x10000) && read_physical_bulk(0x1000, probe.data(), 0x10000)) {
+                s_bulk_max = 0x10000;
+            } else if (pa_valid(0x1000, 0x1000) && read_physical_bulk(0x1000, probe.data(), 0x1000)) {
+                s_bulk_max = 0x1000;
+            }
+            LOG_INFO(s_bulk_max
+                ? "bulk read IOCTL: supported (max chunk 0x" + std::format("{:x}", s_bulk_max) + ")"
+                : "bulk read IOCTL: NOT supported (1-byte fallback)");
         }
-        return s_bulk_ok;
+        return s_bulk_max;
     }
 
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
@@ -366,10 +372,11 @@ namespace sky::driver {
 
         // === ThrottleStop backend ===
         if (g_backend == BACKEND_THROTTLESTOP) {
-            // Multi-byte reads: use the bulk IOCTL when available (probed
-            // once). This is what makes physical scans feasible — the
-            // 1-byte path below would take hours over a multi-GB range.
-            if (size > 1 && bulk_read_supported()) {
+            // Multi-byte reads up to the driver's bulk limit use the bulk
+            // IOCTL (probed once). This is what makes physical scans
+            // feasible — the 1-byte path below would take hours over a
+            // multi-GB range.
+            if (size > 1 && size <= bulk_max_chunk()) {
                 if (read_physical_bulk(phys_addr, buffer, size))
                     return true;
                 // Bulk failed for this range; fall through to the 1-byte
@@ -743,6 +750,8 @@ namespace sky::driver {
         bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) override {
             return ::sky::driver::read_physical(phys_addr, buffer, size);
         }
+
+        size_t max_bulk_chunk() const override { return ::sky::driver::bulk_max_chunk(); }
 
         bool move_mouse(uint32_t, uint32_t, uint16_t) override { return false; }
 
