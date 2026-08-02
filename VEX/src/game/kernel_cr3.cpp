@@ -112,6 +112,20 @@ namespace sky::game {
                     continue;
                 if (hi != 0 && hi != 0x80000000) continue;  // NOT a real entry
 
+                // Stage A2: second kernel entry PML4E[0x1F8] (offset 0xFC0)
+                // must also look like a real entry. Real PML4s have many
+                // consecutive present kernel-half entries; a random data
+                // page passing BOTH 0x1F0 and 0x1F8 is far less likely.
+                uint32_t lo2 = 0;
+                if (!drv->read_physical(pa + 0xFC0, &lo2, sizeof(lo2)))
+                    continue;
+                if (!(lo2 & 1)) continue;
+                if (!(lo2 & 0xFFFFF000)) continue;
+                uint32_t hi2 = 0;
+                if (!drv->read_physical(pa + 0xFC4, &hi2, sizeof(hi2)))
+                    continue;
+                if (hi2 != 0 && hi2 != 0x80000000) continue;
+
                 // Stage B: SELF-VERIFY — walk the kernel image VA through
                 // this candidate. Only a real PML4 maps it to the known PA.
                 if (!sky::driver::verify_pml4_for_kernel(pa, kvbase, kpbase)) {
