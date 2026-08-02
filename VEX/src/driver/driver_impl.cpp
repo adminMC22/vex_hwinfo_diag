@@ -390,21 +390,37 @@ namespace sky::driver {
             if (size > 1 && size <= bulk_max_chunk()) {
                 if (read_physical_bulk(phys_addr, buffer, size))
                     return true;
-                // Bulk failed for this range; fall through to the 1-byte
-                // loop so small cross-range reads still work.
+                // Bulk failed for this range; fall through to the chunked
+                // path so small cross-range reads still work.
             }
             uint8_t* dst = (uint8_t*)buffer;
             size_t remaining = size;
             uintptr_t addr = phys_addr;
 
             while (remaining > 0) {
+                // TS read IOCTL (0x80006498) accepts 1/2/4/8-byte transfers
+                // — the driver MmMapIoSpace()s the address and copies the
+                // requested length back (verified by disasm of the IOCTL
+                // jump table: size mask 0x116 = bits 1,2,4,7). Use the
+                // largest chunk that fits remaining AND stays within one
+                // 4KB page (MmMapIoSpace crossing a page boundary needs a
+                // second map — keep reads page-local to be safe).
+                size_t chunk = remaining;
+                if (chunk > 8) chunk = 8;
+                size_t to_page = 0x1000 - (addr & 0xFFF);
+                if (chunk > to_page) chunk = to_page;
+                if (chunk >= 8) chunk = 8;
+                else if (chunk >= 4) chunk = 4;
+                else if (chunk >= 2) chunk = 2;
+                else chunk = 1;
+
                 uint64_t ts_addr = addr;
-                uint8_t val = 0;
+                uint8_t tmp[8] = { 0 };
                 DWORD returned = 0;
 
                 BOOL ok = DeviceIoControl(g_hwinfo_device, TS_IOCTL_READ,
                     &ts_addr, sizeof(ts_addr),   // input: physical address
-                    &val, sizeof(val),            // output: 1 byte
+                    tmp, (DWORD)chunk,           // output: 1/2/4/8 bytes
                     &returned, nullptr);
 
                 // Transient IOCTL failures happen on the TS driver (seen in
@@ -413,16 +429,31 @@ namespace sky::driver {
                 // is untouched, so detection shape is unchanged.
                 if (!ok && GetLastError() != ERROR_SUCCESS) {
                     ok = DeviceIoControl(g_hwinfo_device, TS_IOCTL_READ,
-                        &ts_addr, sizeof(ts_addr), &val, sizeof(val), &returned, nullptr);
+                        &ts_addr, sizeof(ts_addr), tmp, (DWORD)chunk, &returned, nullptr);
                 }
                 if (!ok) {
-                    LOG_ERROR("TS read IOCTL failed at phys=0x" +
-                        std::format("{:x}", addr) + " GLE=" + std::to_string(GetLastError()));
-                    return false;
+                    // Multi-byte transfer rejected by this driver version?
+                    // Fall back to a single-byte read so nothing regresses.
+                    ok = DeviceIoControl(g_hwinfo_device, TS_IOCTL_READ,
+                        &ts_addr, sizeof(ts_addr), tmp, 1, &returned, nullptr);
+                    if (!ok) {
+                        LOG_ERROR("TS read IOCTL failed at phys=0x" +
+                            std::format("{:x}", addr) + " GLE=" + std::to_string(GetLastError()));
+                        return false;
+                    }
+                    chunk = 1;
                 }
-                *dst++ = val;
-                addr++;
-                remaining--;
+                memcpy(dst, tmp, chunk);
+                dst += chunk;
+                addr += chunk;
+                remaining -= chunk;
+
+                // One-shot proof the multi-byte path engaged (first chunk>1).
+                static bool s_chunk_logged = false;
+                if (chunk > 1 && !s_chunk_logged) {
+                    s_chunk_logged = true;
+                    write_state_log("ts_chunk_read=OK n=" + std::to_string(chunk));
+                }
 
                 // Anti-pattern jitter: random 0-3ms sleep every 8-16 bytes
                 if ((remaining & 0x7) == 0) {

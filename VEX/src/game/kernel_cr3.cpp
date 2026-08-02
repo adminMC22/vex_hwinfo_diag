@@ -233,25 +233,22 @@ namespace sky::game {
             }
         };
 
-        // Read a 64-bit table entry with a two-stage prefilter:
-        //   1st read (4 bytes): lo dword — present bit + frame bits 12-31
-        //     must match the target frame. ~99.99% of pages fail here, so
-        //     we never issue the 2nd read for them.
-        //   2nd read (4 bytes): hi dword — phys < 4GB (+NX free).
-        // Total: 4 IOCTLs + 1 jitter sleep per non-matching page (vs 8+2
-        // before the prefilter was added).
+        // Read a 64-bit table entry with a single 8-byte transfer.
+        // The TS IOCTL accepts 1/2/4/8 bytes per call, so an 8-byte read
+        // is ONE IOCTL — lo+hi dwords in a single call (vs 8 IOCTLs
+        // before chunked reads landed). Per-page cost: 1 IOCTL + 1 jitter
+        // sleep; the frame/present checks are pure CPU.
         auto read_entry = [&](uintptr_t pa, uintptr_t off, uintptr_t want_frame,
                               uint64_t& out) -> bool {
-            uint32_t lo = 0;
-            if (!drv->read_physical(pa + off, &lo, sizeof(lo)))
+            uint64_t e = 0;
+            if (!drv->read_physical(pa + off, &e, sizeof(e)))
                 return false;
+            uint32_t lo = (uint32_t)e;
+            uint32_t hi = (uint32_t)(e >> 32);
             if (!(lo & 1)) return false;                       // present bit
             if ((lo & 0xFFFFF000) != (want_frame & 0xFFFFF000)) return false; // frame bits 12-31
-            uint32_t hi = 0;
-            if (!drv->read_physical(pa + off + 4, &hi, sizeof(hi)))
-                return false;
             if (hi != 0 && hi != 0x80000000) return false;     // phys < 4GB (+NX)
-            out = (uint64_t)hi << 32 | lo;
+            out = e;
             return true;
         };
 
