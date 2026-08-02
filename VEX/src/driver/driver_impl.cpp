@@ -430,18 +430,34 @@ namespace sky::driver {
     // ============================================================
     // VA -> PA translation (4-level page walk)
     // ============================================================
-    // Per-stage failure logging for translate_virtual — one-shot per stage
-    // + value, so the next app.log pinpoints exactly which step of the page
-    // walk returns garbage (which has been the silent killer).
+    // Per-stage failure logging for translate_virtual — re-logs each stage
+    // every tick (no bitmask suppression) so the user sees what's happening
+    // across retries. The 'last_va' tag lets us see if the failing VA changes.
+    // Also logs a SUCCESS line once so we know the walk landed.
     static std::mutex s_walk_log_mtx;
-    static uintptr_t s_walk_logged = 0;       // bitmask of stages already logged
+    static uintptr_t s_walk_last_vaddr = 0;
+    static unsigned s_walk_log_count = 0;
+    static bool s_walk_success_logged = false;
     static void walk_log(unsigned stage, uintptr_t a, uintptr_t b) {
         std::lock_guard<std::mutex> lock(s_walk_log_mtx);
-        if (s_walk_logged & (1u << stage)) return;
-        s_walk_logged |= (1u << stage);
+        if (a != s_walk_last_vaddr) {
+            s_walk_last_vaddr = a;
+            s_walk_log_count = 0;
+        }
+        if (s_walk_log_count >= 4) return;
+        s_walk_log_count++;
         std::string msg = "attach=TRY walk_fail stage=" + std::to_string(stage) +
             " a=0x" + std::format("{:x}", a) +
             " b=0x" + std::format("{:x}", b);
+        write_state_log(msg);
+    }
+    static void walk_success_log(uintptr_t vaddr, uintptr_t dirbase, uintptr_t phys) {
+        std::lock_guard<std::mutex> lock(s_walk_log_mtx);
+        if (s_walk_success_logged) return;
+        s_walk_success_logged = true;
+        std::string msg = "attach=TRY walk_ok vaddr=0x" + std::format("{:x}", vaddr) +
+            " dirbase=0x" + std::format("{:x}", dirbase) +
+            " phys=0x" + std::format("{:x}", phys);
         write_state_log(msg);
     }
 
@@ -459,21 +475,31 @@ namespace sky::driver {
             walk_log(2, (pml4e & PAGE_MASK_4KB) + pdpti * 8, pdpte);
             return 0;
         }
-        if (pdpte & (1 << 7)) return (pdpte & PAGE_MASK_1GB) | (vaddr & 0x3FFFFFFF);
+        if (pdpte & (1 << 7)) {
+            uintptr_t phys = (pdpte & PAGE_MASK_1GB) | (vaddr & 0x3FFFFFFF);
+            walk_success_log(vaddr, dirbase, phys);
+            return phys;
+        }
 
         uintptr_t pde = 0, pdi = (vaddr >> 21) & 0x1FF;
         if (!read_physical((pdpte & PAGE_MASK_4KB) + pdi * 8, &pde, 8) || !(pde & 1)) {
             walk_log(3, (pdpte & PAGE_MASK_4KB) + pdi * 8, pde);
             return 0;
         }
-        if (pde & (1 << 7)) return (pde & PAGE_MASK_2MB) | (vaddr & 0x1FFFFF);
+        if (pde & (1 << 7)) {
+            uintptr_t phys = (pde & PAGE_MASK_2MB) | (vaddr & 0x1FFFFF);
+            walk_success_log(vaddr, dirbase, phys);
+            return phys;
+        }
 
         uintptr_t pte = 0, pti = (vaddr >> 12) & 0x1FF;
         if (!read_physical((pde & PAGE_MASK_4KB) + pti * 8, &pte, 8) || !(pte & 1)) {
             walk_log(4, (pde & PAGE_MASK_4KB) + pti * 8, pte);
             return 0;
         }
-        return (pte & PAGE_MASK_4KB) | (vaddr & 0xFFF);
+        uintptr_t phys = (pte & PAGE_MASK_4KB) | (vaddr & 0xFFF);
+        walk_success_log(vaddr, dirbase, phys);
+        return phys;
     }
 
     // ============================================================
@@ -788,6 +814,15 @@ namespace sky::driver {
 
         bool read_memory(uintptr_t addr, void* buf, size_t sz) override {
             if (!m_init || !buf || !sz) return false;
+            // One-shot log of the FIRST read after attach setup so we can
+            // verify m_dtb is what we expect at the actual read point.
+            static bool s_first_read_logged = false;
+            if (!s_first_read_logged) {
+                s_first_read_logged = true;
+                write_state_log("read_first addr=0x" + std::format("{:x}", addr) +
+                    " dtb=0x" + std::format("{:x}", m_dtb) +
+                    " dtb_set=" + std::to_string(m_dtb_set ? 1 : 0));
+            }
             if (m_dtb_set && m_dtb) {
                 uintptr_t phys = translate_virtual(addr, m_dtb);
                 if (!phys) return false;
