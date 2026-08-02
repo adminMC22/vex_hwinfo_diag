@@ -115,11 +115,37 @@ namespace sky::game {
                     continue;
                 if (!(p1 & 1)) continue;
 
+                // =================== 3rd check: ALSO a kernel-half entry
+                // BELOW 0x1F0 — PML4E[0x100] (the first kernel-half entry,
+                // offset 0x800). Real System PML4 has its kernel half
+                // populated from 0x100 up. If 0x100 is NOT present,
+                // this candidate is NOT a real PML4 — it's a colliding
+                // random page that happened to satisfy 0x1F0 + 0x1F8
+                // by coincidence.
+                uint16_t hi16_100 = 0;
+                if (!drv->read_physical(pa + 0x800 + 6, &hi16_100, sizeof(hi16_100)))
+                    continue;
+                if (hi16_100 != 0xFFFF) continue;
+                uint8_t p2 = 0;
+                if (!drv->read_physical(pa + 0x800, &p2, sizeof(p2)))
+                    continue;
+                if (!(p2 & 1)) continue;
+
+                // =================== 4th check: USER-half entry PML4E[0]
+                // should be PRESENT and canonical user (high 16 bits =
+                // ZERO, since user VAs are 0x0000xxxx...). On a real
+                // USER process PML4 PML4E[0] is typically present with
+                // canonical user bits. On the System PML4 PML4E[0] is
+                // usually ZERO (System has no user VA). Either way,
+                // the high 16 bits here serve as a sanity fingerprint.
+                // Skip — we already accept either System or user PML4s.
+
                 // Found a real PML4 page (System or user — both work).
                 sky::driver::write_state_log("kernel_pml4=0x" +
                     std::format("{:x}", pa));
                 LOG_INFO("kernel PML4 found at phys=0x" + std::format("{:x}", pa) +
-                    " (PML4E[0x1F0]=0x" + std::format("{:x}", hi16_1F0) +
+                    " (PML4E[0x100]=0x" + std::format("{:x}", hi16_100) +
+                    ", PML4E[0x1F0]=0x" + std::format("{:x}", hi16_1F0) +
                     ", PML4E[0x1F8]=0x" + std::format("{:x}", hi16_1F8) + ")");
                 return pa;
             }

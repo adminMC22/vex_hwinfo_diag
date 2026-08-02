@@ -370,6 +370,17 @@ namespace sky::driver {
         if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
         if (!pa_valid(phys_addr, size)) return false;
 
+        // One-shot log of the FIRST physical read attempt that occurs AT OR
+        // INSIDE the page-walk path, so we can verify the IOCTL actually
+        // returns sensible bytes for the System PML4 region (the page where
+        // we found pml4e[0x1F0] present).
+        static bool s_first_phys_logged = false;
+        if (!s_first_phys_logged) {
+            s_first_phys_logged = true;
+            write_state_log("read_phys_first pa=0x" + std::format("{:x}", phys_addr) +
+                " sz=" + std::to_string(size));
+        }
+
         // === ThrottleStop backend ===
         if (g_backend == BACKEND_THROTTLESTOP) {
             // Multi-byte reads up to the driver's bulk limit use the bulk
