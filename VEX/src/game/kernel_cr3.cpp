@@ -225,17 +225,24 @@ namespace sky::game {
             }
         };
 
-        // Read a 64-bit table entry with a low-dword prefilter (4-byte
-        // reads = 4 IOCTLs + 1 jitter sleep vs 8+1 for a full read).
-        auto read_entry = [&](uintptr_t pa, uintptr_t off, uint64_t& out) -> bool {
+        // Read a 64-bit table entry with a two-stage prefilter:
+        //   1st read (4 bytes): lo dword — present bit + frame bits 12-31
+        //     must match the target frame. ~99.99% of pages fail here, so
+        //     we never issue the 2nd read for them.
+        //   2nd read (4 bytes): hi dword — phys < 4GB (+NX free).
+        // Total: 4 IOCTLs + 1 jitter sleep per non-matching page (vs 8+2
+        // before the prefilter was added).
+        auto read_entry = [&](uintptr_t pa, uintptr_t off, uintptr_t want_frame,
+                              uint64_t& out) -> bool {
             uint32_t lo = 0;
             if (!drv->read_physical(pa + off, &lo, sizeof(lo)))
                 return false;
-            if (!(lo & 1)) return false;                 // present bit
+            if (!(lo & 1)) return false;                       // present bit
+            if ((lo & 0xFFFFF000) != (want_frame & 0xFFFFF000)) return false; // frame bits 12-31
             uint32_t hi = 0;
             if (!drv->read_physical(pa + off + 4, &hi, sizeof(hi)))
                 return false;
-            if (hi != 0 && hi != 0x80000000) return false; // phys < 4GB (+NX)
+            if (hi != 0 && hi != 0x80000000) return false;     // phys < 4GB (+NX)
             out = (uint64_t)hi << 32 | lo;
             return true;
         };
@@ -252,26 +259,15 @@ namespace sky::game {
                 for (uintptr_t pa = r[0]; pa + 0x1000 <= end; pa += 0x1000) {
                     heartbeat("pd", pa, end);
                     uint64_t e = 0;
-                    if (!read_entry(pa, kPdi * 8, e)) continue;
-                    // 2MB large page: frame bits 21-51 must equal image frame
+                    if (!read_entry(pa, kPdi * 8, kpbase, e)) continue;
+                    // 2MB large page: PS bit + full frame bits 21-51 must
+                    // equal the image frame. (ntoskrnl is always mapped
+                    // with 2MB pages on Win10/11 x64 — bootloader default.)
                     if ((e & 1ULL << 7) && (e & 0x000FFFFFFFE00000ULL) == frame2m) {
                         pd_page = pa;
                         sky::driver::write_state_log("attach=TRY pml4_rev pd=0x" +
                             std::format("{:x}", pd_page) + " (2MB)");
                         break;
-                    }
-                    // 4KB page: PDE frame = PT page phys (bits 12-51); we
-                    // remember it and validate the PT page after the scan.
-                    if (!(e & 1ULL << 7) && (e & 0x000FFFFFFFFFF000ULL) >= 0x100000) {
-                        uintptr_t pt_phys = e & 0x000FFFFFFFFFF000ULL;
-                        uint64_t pte = 0;
-                        if (read_entry(pt_phys, kPti * 8, pte) &&
-                            (pte & 0x000FFFFFFFFFF000ULL) == (kpbase & 0x000FFFFFFFFFF000ULL)) {
-                            pd_page = pa;
-                            sky::driver::write_state_log("attach=TRY pml4_rev pd=0x" +
-                                std::format("{:x}", pd_page) + " (4KB)");
-                            break;
-                        }
                     }
                 }
                 if (pd_page) break;
@@ -294,7 +290,7 @@ namespace sky::game {
                 for (uintptr_t pa = r[0]; pa + 0x1000 <= end; pa += 0x1000) {
                     heartbeat("pdpt", pa, end);
                     uint64_t e = 0;
-                    if (!read_entry(pa, kPdpti * 8, e)) continue;
+                    if (!read_entry(pa, kPdpti * 8, pd_page, e)) continue;
                     if ((e & 0x000FFFFFFFFFF000ULL) != pd_page) continue;
                     pdpt_page = pa;
                     sky::driver::write_state_log("attach=TRY pml4_rev pdpt=0x" +
@@ -321,7 +317,7 @@ namespace sky::game {
                 for (uintptr_t pa = r[0]; pa + 0x1000 <= end; pa += 0x1000) {
                     heartbeat("pml4", pa, end);
                     uint64_t e = 0;
-                    if (!read_entry(pa, kPml4i * 8, e)) continue;
+                    if (!read_entry(pa, kPml4i * 8, pdpt_page, e)) continue;
                     if ((e & 0x000FFFFFFFFFF000ULL) != pdpt_page) continue;
                     pml4_page = pa;
                     sky::driver::write_state_log("attach=TRY pml4_rev pml4=0x" +
