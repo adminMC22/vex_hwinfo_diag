@@ -584,12 +584,14 @@ namespace sky::driver {
         bool found = false;
 
         // 1) Identity-map heuristic (cheap; works when phys load base
-        //    happens to align with the virtual delta).
+        //    happens to align with the virtual delta). The kernel image
+        //    region identity base is 0xFFFFF80000000000 (NOT
+        //    0xFFFFF78000000000 — that is KUSER_SHARED_DATA).
         static const int64_t k_heuristic_tweaks[] = {
             0, -0x100000, 0x100000, -0x80000, 0x80000,
         };
         for (int64_t tweak : k_heuristic_tweaks) {
-            uintptr_t guess = (uintptr_t)((int64_t)(s_kernel_vbase - 0xFFFFF78000000000ULL) + tweak);
+            uintptr_t guess = (uintptr_t)((int64_t)(s_kernel_vbase - 0xFFFFF80000000000ULL) + tweak);
             if (read_physical(guess, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
                 if (pe_matches(guess, ntk_size)) {
                     s_kernel_pbase = guess;

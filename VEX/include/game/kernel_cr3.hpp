@@ -36,6 +36,17 @@ namespace sky::game {
     // entry. Win10 1904x layout: PEB 0x3B8, ImageFileName 0x5A8.
     bool find_game_process(GameProcessInfo& out, const char* name_prefix);
 
+    // Find ANY valid PML4 page (every process's PML4 shares the kernel half,
+    // so any PML4 translates kernel VAs) by scanning low physical RAM for
+    // the Windows x64 self-referencing entry: PML4E index 0x1ED (PTE_BASE
+    // 0xFFFFF68000000000 >> 39 & 0x1FF) must point to the PML4 page itself.
+    // Uses 4-byte reads: the 1-byte loop only sleeps (jitter) at 8-byte
+    // boundaries, so a 64MB pass is ~16K x 4 IOCTLs with zero sleeps.
+    // Returns the PML4 physical address, or 0. Bounds: low physical RAM
+    // (PML4 pages are allocated by the boot memory manager in the first
+    // ~64MB, extending to 256MB in a second pass if needed).
+    uintptr_t find_kernel_pml4();
+
     // Physical-scan attach: no kernel-pool VA translation required (the
     // ThrottleStop backend's phys offset only maps the ntoskrnl image, so
     // EPROCESS-list reads fail). Instead: bulk-scan physical RAM for the

@@ -173,9 +173,27 @@ namespace sky::game::engine {
                 //    kernel-pool VA translation needed — works with the
                 //    ThrottleStop backend where the EPROCESS walk fails.
                 bool attached = sky::game::find_game_process_phys(info, game_name);
-                // 2) EPROCESS-list walk as a fallback (backends with full
-                //    kernel VA→PA support).
+                // 2) Bootstrap a kernel DTB via the PML4 self-map (works on
+                //    drivers with only 1-byte reads — the phys-scan bails
+                //    NO_BULK there). Once set, ALL kernel VAs (ntoskrnl
+                //    export table AND pool EPROCESS entries) translate
+                //    through real page tables, so the export lookup and the
+                //    EPROCESS walk both work. One-shot per run.
                 if (!attached) {
+                    static bool s_pml4_tried = false;
+                    if (!s_pml4_tried) {
+                        s_pml4_tried = true;
+                        sky::driver::write_state_log("attach=TRY kernel_pml4_scan");
+                        auto pml4 = sky::game::find_kernel_pml4();
+                        if (pml4) {
+                            sky::driver::g_driver->set_dir_base((void*)pml4);
+                            sky::driver::write_state_log("kernel_pml4=0x" + std::format("{:x}", pml4));
+                        } else {
+                            sky::driver::write_state_log("kernel_pml4=NOT_FOUND");
+                        }
+                    }
+                    // 3) EPROCESS-list walk (needs the kernel DTB above, or
+                    //    a backend with full kernel VA→PA support).
                     attached = sky::game::find_game_process(info, game_name);
                 }
                 if (attached) {

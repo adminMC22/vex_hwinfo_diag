@@ -25,6 +25,60 @@ namespace sky::game {
         return cr3 < max_physical();                   // must be a physical address
     }
 
+    // Scan low physical RAM for a PML4 whose self-referencing entry
+    // (PML4E[0x1ED], PTE_BASE 0xFFFFF68000000000) points to the page
+    // itself. See the declaration in kernel_cr3.hpp for the rationale.
+    // Two passes: 1MB-64MB, then 64MB-256MB if the first misses.
+    uintptr_t find_kernel_pml4() {
+        auto drv = sky::driver::g_driver;
+        constexpr uintptr_t kSelfIndex = 0x1ED;
+        constexpr uintptr_t kSelfOff = kSelfIndex * 8;      // 0xF68
+        uintptr_t scan_start = 0x100000;
+        uintptr_t pass_end = 0x4000000;                     // 64MB
+
+        for (int pass = 0; pass < 2; pass++) {
+            for (uintptr_t pa = scan_start; pa + 0x1000 <= pass_end; pa += 0x1000) {
+                // 4-byte read: low 32 bits carry the frame (phys < 4GB) and
+                // flags — and 4-byte reads never hit the jitter sleep (the
+                // 1-byte loop only sleeps at 8-byte boundaries).
+                uint32_t low = 0;
+                if (!drv->read_physical(pa + kSelfOff, &low, sizeof(low)))
+                    continue;
+                if (!(low & 1)) continue;                   // not present
+                if ((low & 0xFFFFF000) != pa) continue;     // not self-referencing
+                // Collision guard: real kernel PML4E frames fit in 32 bits
+                // (phys < 4GB) — the high dword's frame bits (32-47) must
+                // be zero. Costs 4 IOCTLs only on the rare low-match page.
+                uint32_t hi = 0;
+                if (!drv->read_physical(pa + kSelfOff + 4, &hi, sizeof(hi)))
+                    continue;
+                if ((hi & 0xFFFF) != 0) continue;
+                LOG_INFO("kernel PML4 found at phys=0x" + std::format("{:x}", pa));
+                return pa;
+            }
+            scan_start = pass_end;
+            pass_end = 0x10000000;                          // extend to 256MB
+            if (scan_start >= pass_end) break;
+        }
+        LOG_WARNING("find_kernel_pml4: no self-referencing PML4 in low RAM");
+        return 0;
+    }
+
+    // One-shot state-log line for the exact stage where the ntoskrnl export
+    // parse bailed, with the values that caused it — makes the next app.log
+    // diagnostic without more guessing.
+    static void log_export_fail(const std::string& stage, uintptr_t a = 0, uintptr_t b = 0, uintptr_t c = 0) {
+        static std::string s_last;
+        std::string msg = "attach=TRY nt_export=fail stage=" + stage;
+        if (a) msg += " a=0x" + std::format("{:x}", a);
+        if (b) msg += " b=0x" + std::format("{:x}", b);
+        if (c) msg += " c=0x" + std::format("{:x}", c);
+        if (msg != s_last) {
+            s_last = msg;
+            sky::driver::write_state_log(msg);
+        }
+    }
+
     uintptr_t find_ntoskrnl_export(const std::string& name) {
         static std::string s_cached_name;
         static uintptr_t s_cached_va = 0;
@@ -36,30 +90,46 @@ namespace sky::game {
         auto base = drv->get_kernel_base("ntoskrnl.exe");
         if (!base) {
             LOG_WARNING("nt export: ntoskrnl.exe not in module list");
+            log_export_fail("base", base);
             return 0;
         }
 
         // PE headers
         auto pe_off = drv->read<uint32_t>(base + 0x3C);
-        if (!pe_off || pe_off > 0x1000) return 0;
+        if (!pe_off || pe_off > 0x1000) {
+            log_export_fail("pe_off", base, pe_off);
+            return 0;
+        }
         auto pe_sig = drv->read<uint32_t>(base + pe_off);
-        if ((pe_sig & 0xFFFF) != 0x4550) return 0;     // "PE\0\0"
+        if ((pe_sig & 0xFFFF) != 0x4550) {           // "PE\0\0"
+            log_export_fail("pe_sig", base + pe_off, pe_sig);
+            return 0;
+        }
 
         auto opt = base + pe_off + 24;                 // optional header
         auto magic = drv->read<uint16_t>(opt);
-        if (magic != 0x20B) return 0;                  // PE32+ only
+        if (magic != 0x20B) {                          // PE32+ only
+            log_export_fail("magic", opt, magic);
+            return 0;
+        }
 
         // Data directory 0 = exports: (VirtualAddress, Size) at opt+0x70
         auto exp_rva = drv->read<uint32_t>(opt + 0x70);
         auto exp_size = drv->read<uint32_t>(opt + 0x74);
-        if (!exp_rva || !exp_size) return 0;
+        if (!exp_rva || !exp_size) {
+            log_export_fail("expdir", exp_rva, exp_size);
+            return 0;
+        }
 
         auto exp = base + exp_rva;
         auto num_names  = drv->read<uint32_t>(exp + 24);
         auto addr_funcs = drv->read<uint32_t>(exp + 28);   // RVA of EAT
         auto addr_names = drv->read<uint32_t>(exp + 32);   // RVA of name pointers
         auto addr_ords  = drv->read<uint32_t>(exp + 36);   // RVA of name ordinals
-        if (!num_names || num_names > 0x10000 || !addr_names) return 0;
+        if (!num_names || num_names > 0x10000 || !addr_names) {
+            log_export_fail("names", num_names, addr_names);
+            return 0;
+        }
 
         // Fast path: 8-byte prefix compare before reading the whole name.
         uint64_t want_prefix = 0;
@@ -90,6 +160,7 @@ namespace sky::game {
                 }
             }
         }
+        log_export_fail("notfound", num_names);
         LOG_WARNING("nt export: \"" + name + "\" not found");
         return 0;
     }
