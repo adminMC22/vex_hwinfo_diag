@@ -48,18 +48,27 @@ namespace sky::game {
     // translation because user PML4s inherit the kernel-half mappings
     // from the System PML4).
     //
-    // Filter (operates at offsets within the page; cost = ~4 IOCTLs/page):
-    //   PML4E[0x1F0] (offset 0xF80) must be present and canonical kernel
-    //     — this is the entry that maps ntoskrnl.exe at vbase 0xfffff805..
-    //   PML4E[0x1F8] (offset 0xFC0) must be present and canonical kernel
-    //     — adjacent kernel entry; random pages almost never have BOTH set
-    //     to canonical kernel present pointers at the right offsets.
-    //
-    // We don't need a self-referencing entry — we never read the page's
-    // self-mapping; we just walk the page tables through this DTB.
-    // Self-ref OR not, System or user PML4 — all translate kernel VAs.
+    // Two-stage filter + SELF-VERIFICATION:
+    //   Stage A (cheap, per page): PML4E[0x1F0] (offset 0xF80) must be a
+    //     plausible entry: present bit set, frame bits 12-31 nonzero, and
+    //     the high dword must be 0x00000000 or 0x80000000 (NX). Real
+    //     PML4Es contain a PHYSICAL frame (bits 12-51) — their high 16
+    //     bits are 0x0000 or 0x8000, NEVER 0xFFFF. Kernel POOL pages full
+    //     of pointers (0xFFFFF8xx...) fail the high-dword check.
+    //   Stage B (rare): walk the KNOWN kernel image VA through the
+    //     candidate and require phys == known kernel image PA
+    //     (verify_pml4_for_kernel). A random page cannot pass a full
+    //     4-level walk with a known answer — this is the definitive test.
     uintptr_t find_kernel_pml4() {
         auto drv = sky::driver::g_driver;
+
+        // Need the known kernel image VA+PA for the self-verification walk.
+        // This also forces the kernel-offset init (kernel_offset=OK log).
+        uintptr_t kvbase = 0, kpbase = 0;
+        if (!sky::driver::kernel_image_offset(&kvbase, &kpbase)) {
+            sky::driver::write_state_log("kernel_pml4=NO_IMAGE");
+            return 0;
+        }
 
         // Three-tier scan ranges (System PML4 usually in tier 0).
         static constexpr uintptr_t kRanges[][2] = {
@@ -87,66 +96,40 @@ namespace sky::game {
                         "/0x" + std::format("{:x}", pass_end));
                 }
 
-                // Pre-filter: 2-byte read at PML4E[0x1F0] high bytes.
-                // Real kernel PML4s have this entry canonical (high 16 = 0xFFFF)
-                // AND present. The 2-byte read at offset 0xF80+6 gives high
-                // bits; we compare to 0xFFFF (kernel canonical). Random pages
-                // almost never satisfy this at exactly position 0xF86.
-                uint16_t hi16_1F0 = 0;
-                if (!drv->read_physical(pa + 0xF80 + 6, &hi16_1F0, sizeof(hi16_1F0)))
+                // Stage A: PML4E[0x1F0] — low dword (offset 0xF80).
+                //   4-byte read = 4 IOCTLs, no jitter sleep.
+                uint32_t lo = 0;
+                if (!drv->read_physical(pa + 0xF80, &lo, sizeof(lo)))
                     continue;
-                if (hi16_1F0 != 0xFFFF) continue;
+                if (!(lo & 1)) continue;                    // present bit
+                if (!(lo & 0xFFFFF000)) continue;           // frame bits 12-31 nonzero
 
-                // Verify PML4E[0x1F0]'s PRESENT bit at offset 0xF80 low byte.
-                uint8_t p0 = 0;
-                if (!drv->read_physical(pa + 0xF80, &p0, sizeof(p0)))
+                // Stage A: high dword (offset 0xF84) — frame bits 32-47 +
+                // reserved bits must be 0 (phys < 2^48); NX bit 31 free.
+                uint32_t hi = 0;
+                if (!drv->read_physical(pa + 0xF84, &hi, sizeof(hi)))
                     continue;
-                if (!(p0 & 1)) continue;
+                if (hi != 0 && hi != 0x80000000) continue;  // NOT a real entry
 
-                // Strong second check: PML4E[0x1F8] at offset 0xFC0 — high
-                // 2 bytes are also 0xFFFF, and present bit set. Random
-                // pages rarely have BOTH 0x1F0 and 0x1F8 set correctly.
-                uint16_t hi16_1F8 = 0;
-                if (!drv->read_physical(pa + 0xFC0 + 6, &hi16_1F8, sizeof(hi16_1F8)))
+                // Stage B: SELF-VERIFY — walk the kernel image VA through
+                // this candidate. Only a real PML4 maps it to the known PA.
+                if (!sky::driver::verify_pml4_for_kernel(pa, kvbase, kpbase)) {
+                    // Log once per range: the candidate LOOKED like an entry
+                    // but failed the walk — proves the verification runs.
+                    static bool s_rej_logged = false;
+                    if (!s_rej_logged) {
+                        s_rej_logged = true;
+                        sky::driver::write_state_log("attach=TRY pml4_verify_reject pa=0x" +
+                            std::format("{:x}", pa));
+                    }
                     continue;
-                if (hi16_1F8 != 0xFFFF) continue;
-                uint8_t p1 = 0;
-                if (!drv->read_physical(pa + 0xFC0, &p1, sizeof(p1)))
-                    continue;
-                if (!(p1 & 1)) continue;
+                }
 
-                // =================== 3rd check: ALSO a kernel-half entry
-                // BELOW 0x1F0 — PML4E[0x100] (the first kernel-half entry,
-                // offset 0x800). Real System PML4 has its kernel half
-                // populated from 0x100 up. If 0x100 is NOT present,
-                // this candidate is NOT a real PML4 — it's a colliding
-                // random page that happened to satisfy 0x1F0 + 0x1F8
-                // by coincidence.
-                uint16_t hi16_100 = 0;
-                if (!drv->read_physical(pa + 0x800 + 6, &hi16_100, sizeof(hi16_100)))
-                    continue;
-                if (hi16_100 != 0xFFFF) continue;
-                uint8_t p2 = 0;
-                if (!drv->read_physical(pa + 0x800, &p2, sizeof(p2)))
-                    continue;
-                if (!(p2 & 1)) continue;
-
-                // =================== 4th check: USER-half entry PML4E[0]
-                // should be PRESENT and canonical user (high 16 bits =
-                // ZERO, since user VAs are 0x0000xxxx...). On a real
-                // USER process PML4 PML4E[0] is typically present with
-                // canonical user bits. On the System PML4 PML4E[0] is
-                // usually ZERO (System has no user VA). Either way,
-                // the high 16 bits here serve as a sanity fingerprint.
-                // Skip — we already accept either System or user PML4s.
-
-                // Found a real PML4 page (System or user — both work).
+                // Found a REAL PML4 page — verified by the walk.
                 sky::driver::write_state_log("kernel_pml4=0x" +
-                    std::format("{:x}", pa));
+                    std::format("{:x}", pa) + " VERIFIED");
                 LOG_INFO("kernel PML4 found at phys=0x" + std::format("{:x}", pa) +
-                    " (PML4E[0x100]=0x" + std::format("{:x}", hi16_100) +
-                    ", PML4E[0x1F0]=0x" + std::format("{:x}", hi16_1F0) +
-                    ", PML4E[0x1F8]=0x" + std::format("{:x}", hi16_1F8) + ")");
+                    " — verified via kernel-image walk");
                 return pa;
             }
         }

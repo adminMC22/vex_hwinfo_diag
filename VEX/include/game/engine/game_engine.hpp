@@ -142,6 +142,7 @@ namespace sky::game::engine {
         std::atomic<bool> m_needs_refresh{false};
         std::atomic<uintptr_t> m_uworld_offset{0};
         std::atomic<uintptr_t> m_kproc_cr3{0};   // real CR3 from EPROCESS (fallback)
+        std::atomic<uintptr_t> m_kernel_pml4{0}; // verified kernel PML4 (attach bootstrap)
 
         uintptr_t m_last_world_addr{0};
     };

@@ -15,6 +15,15 @@ namespace sky::driver {
     // Implemented in driver_impl.cpp. Safe to call from any thread.
     void write_state_log(const std::string& line);
 
+    // ntoskrnl image VA+PA (ensures the kernel-offset init ran). Returns
+    // false if the image couldn't be located in physical memory.
+    bool kernel_image_offset(uintptr_t* vbase, uintptr_t* pbase);
+
+    // Walk a kernel VA through a candidate PML4 page table and require the
+    // result to match the known ntoskrnl physical base. Used to prove a
+    // scanned page is a REAL PML4 (self-verifying attach bootstrap).
+    bool verify_pml4_for_kernel(uintptr_t pml4_pa, uintptr_t vbase, uintptr_t pbase);
+
 } // namespace sky::driver
 
 

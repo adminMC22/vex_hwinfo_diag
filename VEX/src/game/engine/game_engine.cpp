@@ -188,6 +188,11 @@ namespace sky::game::engine {
                         if (pml4) {
                             sky::driver::g_driver->set_dir_base((void*)pml4);
                             sky::driver::write_state_log("kernel_pml4=0x" + std::format("{:x}", pml4));
+                            // After a verified PML4, the EPROCESS walk below
+                            // translates pool VAs through real page tables.
+                            // Also cache the pml4 as a fallback DTB for
+                            // find_process_cr3 (vgk path) if it's ever needed.
+                            m_kernel_pml4.store(pml4);
                         } else {
                             sky::driver::write_state_log("kernel_pml4=NOT_FOUND");
                         }
