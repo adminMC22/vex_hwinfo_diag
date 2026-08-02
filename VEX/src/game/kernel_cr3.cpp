@@ -44,16 +44,28 @@ namespace sky::game {
     //   Then verify the self-referencing entry (scanning all 512 indices).
     //   Finally reject if PML4E[0x1F0] (the entry used to read ntoskrnl)
     //     is absent — so we can't pick a PML4 the export walk can't use.
+    // Find ANY PML4 page (System or user — both work for kernel VA
+    // translation because user PML4s inherit the kernel-half mappings
+    // from the System PML4).
+    //
+    // Filter (operates at offsets within the page; cost = ~4 IOCTLs/page):
+    //   PML4E[0x1F0] (offset 0xF80) must be present and canonical kernel
+    //     — this is the entry that maps ntoskrnl.exe at vbase 0xfffff805..
+    //   PML4E[0x1F8] (offset 0xFC0) must be present and canonical kernel
+    //     — adjacent kernel entry; random pages almost never have BOTH set
+    //     to canonical kernel present pointers at the right offsets.
+    //
+    // We don't need a self-referencing entry — we never read the page's
+    // self-mapping; we just walk the page tables through this DTB.
+    // Self-ref OR not, System or user PML4 — all translate kernel VAs.
     uintptr_t find_kernel_pml4() {
         auto drv = sky::driver::g_driver;
 
-        // System PML4 is allocated very early in boot — almost always below
-        // 8MB. Scan that fast range first (~35 sec on a 1-byte driver), then
-        // extend only if it misses.
+        // Three-tier scan ranges (System PML4 usually in tier 0).
         static constexpr uintptr_t kRanges[][2] = {
-            { 0x100000, 0x800000 },    // 1MB-8MB   (System PML4 usually here)
-            { 0x800000,  0x4000000 },  // 8MB-64MB  (extended pool)
-            { 0x4000000, 0x10000000 }, // 64MB-256MB (paranoid last resort)
+            { 0x100000, 0x800000 },    // 1MB-8MB
+            { 0x800000,  0x4000000 },  // 8MB-64MB
+            { 0x4000000, 0x10000000 }, // 64MB-256MB
         };
         static std::chrono::steady_clock::time_point s_last_prog{};
 
@@ -75,54 +87,45 @@ namespace sky::game {
                         "/0x" + std::format("{:x}", pass_end));
                 }
 
-                // Kernel-half populated check: high 2 bytes of PML4E[256]
-                // (page + 2048 + 6). A System PML4 kernel half is filled
-                // with canonical kernel VAs (high 16 = 0xFFFF).
-                uint16_t k_hi16 = 0;
-                if (!drv->read_physical(pa + 2048 + 6, &k_hi16, sizeof(k_hi16)))
+                // Pre-filter: 2-byte read at PML4E[0x1F0] high bytes.
+                // Real kernel PML4s have this entry canonical (high 16 = 0xFFFF)
+                // AND present. The 2-byte read at offset 0xF80+6 gives high
+                // bits; we compare to 0xFFFF (kernel canonical). Random pages
+                // almost never satisfy this at exactly position 0xF86.
+                uint16_t hi16_1F0 = 0;
+                if (!drv->read_physical(pa + 0xF80 + 6, &hi16_1F0, sizeof(hi16_1F0)))
                     continue;
-                if (k_hi16 != 0xFFFF) continue;
+                if (hi16_1F0 != 0xFFFF) continue;
 
-                // Empty-user-half gate: read 2 of PML4E[0..N]; System has
-                // all these zero. (User processes have at least one DLL in
-                // the low user half, so PML4E[0] is almost always non-zero.)
-                uint64_t u0 = 0, u1 = 0;
-                if (!drv->read_physical(pa + 0, &u0, sizeof(u0))) continue;
-                if (!drv->read_physical(pa + 8, &u1, sizeof(u1))) continue;
-                if (u0 != 0 || u1 != 0) continue;
-
-                // Find the self-referencing entry (frame bits == this page).
-                uintptr_t self_idx = 0;
-                bool self_found = false;
-                for (uintptr_t idx = 0; idx < 512; idx++) {
-                    uintptr_t entry = 0;
-                    if (!drv->read_physical(pa + idx * 8, &entry, sizeof(entry)))
-                        continue;
-                    if (!(entry & 1)) continue;            // not present
-                    if ((entry & 0xFFFFFFFFFFFFF000ULL) != pa) continue;
-                    self_idx = idx;
-                    self_found = true;
-                    break;
-                }
-                if (!self_found) continue;
-
-                // Final gate: PML4E[0x1F0] (where ntoskrnl.exe mappings live)
-                // must be present — the export walk depends on it.
-                uintptr_t e1F0 = 0;
-                if (!drv->read_physical(pa + 0x1F0 * 8, &e1F0, sizeof(e1F0)))
+                // Verify PML4E[0x1F0]'s PRESENT bit at offset 0xF80 low byte.
+                uint8_t p0 = 0;
+                if (!drv->read_physical(pa + 0xF80, &p0, sizeof(p0)))
                     continue;
-                if (!(e1F0 & 1)) continue;
+                if (!(p0 & 1)) continue;
 
+                // Strong second check: PML4E[0x1F8] at offset 0xFC0 — high
+                // 2 bytes are also 0xFFFF, and present bit set. Random
+                // pages rarely have BOTH 0x1F0 and 0x1F8 set correctly.
+                uint16_t hi16_1F8 = 0;
+                if (!drv->read_physical(pa + 0xFC0 + 6, &hi16_1F8, sizeof(hi16_1F8)))
+                    continue;
+                if (hi16_1F8 != 0xFFFF) continue;
+                uint8_t p1 = 0;
+                if (!drv->read_physical(pa + 0xFC0, &p1, sizeof(p1)))
+                    continue;
+                if (!(p1 & 1)) continue;
+
+                // Found a real PML4 page (System or user — both work).
                 sky::driver::write_state_log("kernel_pml4=0x" +
-                    std::format("{:x}", pa) +
-                    " idx=0x" + std::format("{:x}", self_idx));
+                    std::format("{:x}", pa));
                 LOG_INFO("kernel PML4 found at phys=0x" + std::format("{:x}", pa) +
-                    " self_idx=0x" + std::format("{:x}", self_idx));
+                    " (PML4E[0x1F0]=0x" + std::format("{:x}", hi16_1F0) +
+                    ", PML4E[0x1F8]=0x" + std::format("{:x}", hi16_1F8) + ")");
                 return pa;
             }
         }
         sky::driver::write_state_log("kernel_pml4=NOT_FOUND");
-        LOG_WARNING("find_kernel_pml4: no System PML4 in low RAM");
+        LOG_WARNING("find_kernel_pml4: no PML4 with ntoskrnl mapping in low RAM");
         return 0;
     }
 
