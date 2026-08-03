@@ -380,14 +380,117 @@ namespace sky::driver {
     // Is this physical address range inside installed RAM?
     // ThrottleStop's driver uses MmMapIoSpace internally; probing an
     // address beyond RAM (or in an MMIO hole) can bugcheck the system
-    // with MEMORY_MANAGEMENT. Reject anything outside installed RAM.
+    // with MEMORY_MANAGEMENT / WHEA 0x124. ASMMAP64 maps
+    // \Device\PhysicalMemory — but reading a hole (e.g. the ~427MB iGPU
+    // stolen region on this box) raises an UNCORRECTABLE machine check
+    // that NO SEH handler can catch: #MC is fatal and Windows bugchecks
+    // WHEA_UNCORRECTABLE_ERROR immediately, the __try/__except around
+    // the memcpy never sees it. So reads are allowed ONLY inside
+    // physical ranges the OS memory manager lists as real RAM; anything
+    // else is refused BEFORE any IOCTL or map is issued.
+    struct PhysRange { uintptr_t start, end; };         // [start, end)
+    static std::vector<PhysRange> s_ram_ranges;
+    static bool s_ram_ranges_ready = false;
+
+    static void enum_ram_ranges() {
+        s_ram_ranges.clear();
+        // SystemMemoryListInformation (info class 80): the memory manager's
+        // page lists (zeroed/free/standby/modified/transition/active/pool/
+        // cache...). EVERY real RAM page is in exactly one list; MMIO and
+        // stolen regions are not pages and never appear. Union of all runs
+        // == all readable physical RAM.
+        ULONG need = 0;
+        // Sizing call: returns STATUS_INFO_LENGTH_MISMATCH (not success)
+        // while filling `need` with the required buffer size.
+        NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)80, nullptr, 0, &need);
+        if (need > sizeof(ULONG_PTR) * 13) {
+            std::vector<uint8_t> buf(need + 0x1000);
+            ULONG got = (ULONG)buf.size();
+            NTSTATUS st = NtQuerySystemInformation(
+                (SYSTEM_INFORMATION_CLASS)80, buf.data(), got, &got);
+            if (NT_SUCCESS(st) && got > sizeof(ULONG_PTR) * 13) {
+                // Header: 13 ULONG_PTR counters, then a variable-length
+                // array of SYSTEM_MEMORY_LIST_ENTRY {NextPage, PageCount}
+                // runs (one pair per contiguous run, all lists in order).
+                const size_t header = sizeof(ULONG_PTR) * 13;
+                const size_t n = (got - header) / (sizeof(ULONG_PTR) * 2);
+                const ULONG_PTR* p = (const ULONG_PTR*)(buf.data() + header);
+                for (size_t i = 0; i < n; i++) {
+                    ULONG_PTR pfn = p[i * 2];
+                    ULONG_PTR cnt = p[i * 2 + 1];
+                    if (!pfn || !cnt) continue;
+                    uintptr_t start = (uintptr_t)pfn << 12;
+                    uintptr_t end = start + ((uintptr_t)cnt << 12);
+                    if (end > start) s_ram_ranges.push_back({ start, end });
+                }
+            }
+        }
+
+        // Sort + merge overlapping/adjacent ranges.
+        std::sort(s_ram_ranges.begin(), s_ram_ranges.end(),
+            [](const PhysRange& a, const PhysRange& b) { return a.start < b.start; });
+        std::vector<PhysRange> merged;
+        for (auto& r : s_ram_ranges) {
+            if (merged.empty() || r.start > merged.back().end)
+                merged.push_back(r);
+            else if (r.end > merged.back().end)
+                merged.back().end = r.end;
+        }
+        s_ram_ranges.swap(merged);
+
+        // Sane-parse validation: if the header layout drifted (build
+        // differences), the union won't look like installed RAM. Reject
+        // the parse rather than risk treating a hole as readable. Note:
+        // the lists sum to ALL managed PFN pages (~installed RAM), while
+        // get_total_phys() reports usable RAM (stolen region excluded),
+        // so the upper bound is deliberately loose.
+        uintptr_t total = 0;
+        for (auto& r : s_ram_ranges) total += r.end - r.start;
+        uint64_t expect = get_total_phys();
+        bool low_ok = false;
+        for (auto& r : s_ram_ranges) {
+            if (r.start <= 0x100000 && r.end >= 0x200000) low_ok = true;
+        }
+        bool sane = !s_ram_ranges.empty() && low_ok &&
+            total >= expect / 2 && total <= expect * 2;
+
+        if (!sane) {
+            // Fallback: only the band proven safe by 100+ ThrottleStop
+            // runs (reads below 416MB never MCE'd on this box).
+            s_ram_ranges.clear();
+            s_ram_ranges.push_back({ 0x1000, 0x1A000000 });
+            write_state_log("ram_ranges=ENUM_FAIL cap=0x1a000000");
+        } else {
+            std::string msg = "ram_ranges=" + std::to_string(s_ram_ranges.size());
+            for (auto& r : s_ram_ranges) {
+                msg += " 0x" + std::format("{:x}", r.start) +
+                       "-0x" + std::format("{:x}", r.end);
+            }
+            write_state_log(msg);
+        }
+        s_ram_ranges_ready = true;
+    }
+
+    static void ensure_ram_ranges() {
+        if (!s_ram_ranges_ready) enum_ram_ranges();
+    }
+
     static bool pa_valid(uintptr_t pa, size_t size) {
-        uint64_t total = get_total_phys();
         if (size == 0) return false;
-        if (pa >= total) return false;
         if (pa + size < pa) return false;              // overflow
-        if (pa + size > total) return false;
-        return true;
+        ensure_ram_ranges();
+        // Backend ceiling for ThrottleStop only: it machine-checks above
+        // ~416MB even inside enumerated RAM (verified by disasm + 100+
+        // runs), so a garbage walk entry must never push a TS read that
+        // high. ASMMAP64 maps \Device\PhysicalMemory — the enumerated
+        // ranges below ARE the safety gate for it.
+        if (g_backend == BACKEND_THROTTLESTOP &&
+            (pa >= 0x1A000000ULL || pa + size > 0x1A000000ULL))
+            return false;
+        for (auto& r : s_ram_ranges) {
+            if (pa >= r.start && pa + size <= r.end) return true;
+        }
+        return false;
     }
 
     static size_t bulk_max_chunk() {
@@ -406,8 +509,13 @@ namespace sky::driver {
     // One map IOCTL (0x9C402580) maps a physical range into USER space;
     // reads are then plain memcpy from the mapped VA — zero per-read
     // IOCTLs. A 4MB window is cached so sequential page-walk reads stay
-    // inside it. Because the view comes from \Device\PhysicalMemory,
-    // holes are absent from the section and can never machine-check.
+    // inside it. NOTE: the \Device\PhysicalMemory view is NOT hole-proof —
+    // the section spans the whole physical space and touching a hole page
+    // (e.g. the ~427MB iGPU stolen region) raises an UNCORRECTABLE machine
+    // check that SEH CANNOT catch (WHEA bugchecks immediately). Safety comes
+    // from pa_valid() above: no request ever leaves this module unless it is
+    // fully inside an enumerated RAM range, and windows are clamped to the
+    // containing range so a window never spans a hole in the first place.
     static uintptr_t s_map_base = 0;
     static size_t    s_map_size = 0;
     static uintptr_t s_map_va   = 0;
@@ -466,6 +574,18 @@ namespace sky::driver {
         win = (win + 0xFFF) & ~0xFFFULL;
         uint64_t total = get_total_phys();
         if (base + win > total) win = (size_t)(total - base);
+        if (win < (size_t)(need - base)) return false;  // cannot cover
+
+        // Clamp the window to the containing RAM range so a window NEVER
+        // spans a hole (the map may succeed over a hole but touching the
+        // hole bytes machine-checks — WHEA, not SEH-catchable).
+        ensure_ram_ranges();
+        for (auto& r : s_ram_ranges) {
+            if (base >= r.start && base < r.end) {
+                if (base + win > r.end) win = (size_t)(r.end - base);
+                break;
+            }
+        }
         if (win < (size_t)(need - base)) return false;  // cannot cover
 
         if (s_map_valid) asmmap_unmap();
@@ -638,42 +758,53 @@ namespace sky::driver {
     static uintptr_t translate_virtual(uintptr_t vaddr, uintptr_t dirbase) {
         if (!dirbase) { walk_log(0, vaddr, dirbase); return 0; }
 
+        // Reserved-bit check shared by all four levels: entry bits 52-62
+        // must be 0 for a REAL table entry (frame bits 12-51 are free; NX
+        // bit 63 is free). Garbage candidates produce garbage frames whose
+        // reserved bits are set — rejecting them here keeps the walk from
+        // following nonsense pointers (which can point INTO a hole).
+        auto entry_ok = [](uintptr_t e) -> bool {
+            return (e & 1) && (((e >> 52) & 0x7FF) == 0);
+        };
+        auto finish = [&](uintptr_t phys) -> uintptr_t {
+            if (!pa_valid(phys, 1)) {        // final phys must be real RAM
+                walk_log(0, vaddr, phys);
+                return 0;
+            }
+            walk_success_log(vaddr, dirbase, phys);
+            return phys;
+        };
+
         uintptr_t pml4e = 0, pml4i = (vaddr >> 39) & 0x1FF;
-        if (!read_physical(dirbase + pml4i * 8, &pml4e, 8) || !(pml4e & 1)) {
+        if (!read_physical(dirbase + pml4i * 8, &pml4e, 8) || !entry_ok(pml4e)) {
             walk_log(1, dirbase + pml4i * 8, pml4e);
             return 0;
         }
 
         uintptr_t pdpte = 0, pdpti = (vaddr >> 30) & 0x1FF;
-        if (!read_physical((pml4e & PAGE_MASK_4KB) + pdpti * 8, &pdpte, 8) || !(pdpte & 1)) {
+        if (!read_physical((pml4e & PAGE_MASK_4KB) + pdpti * 8, &pdpte, 8) || !entry_ok(pdpte)) {
             walk_log(2, (pml4e & PAGE_MASK_4KB) + pdpti * 8, pdpte);
             return 0;
         }
         if (pdpte & (1 << 7)) {
-            uintptr_t phys = (pdpte & PAGE_MASK_1GB) | (vaddr & 0x3FFFFFFF);
-            walk_success_log(vaddr, dirbase, phys);
-            return phys;
+            return finish((pdpte & PAGE_MASK_1GB) | (vaddr & 0x3FFFFFFF));
         }
 
         uintptr_t pde = 0, pdi = (vaddr >> 21) & 0x1FF;
-        if (!read_physical((pdpte & PAGE_MASK_4KB) + pdi * 8, &pde, 8) || !(pde & 1)) {
+        if (!read_physical((pdpte & PAGE_MASK_4KB) + pdi * 8, &pde, 8) || !entry_ok(pde)) {
             walk_log(3, (pdpte & PAGE_MASK_4KB) + pdi * 8, pde);
             return 0;
         }
         if (pde & (1 << 7)) {
-            uintptr_t phys = (pde & PAGE_MASK_2MB) | (vaddr & 0x1FFFFF);
-            walk_success_log(vaddr, dirbase, phys);
-            return phys;
+            return finish((pde & PAGE_MASK_2MB) | (vaddr & 0x1FFFFF));
         }
 
         uintptr_t pte = 0, pti = (vaddr >> 12) & 0x1FF;
-        if (!read_physical((pde & PAGE_MASK_4KB) + pti * 8, &pte, 8) || !(pte & 1)) {
+        if (!read_physical((pde & PAGE_MASK_4KB) + pti * 8, &pte, 8) || !entry_ok(pte)) {
             walk_log(4, (pde & PAGE_MASK_4KB) + pti * 8, pte);
             return 0;
         }
-        uintptr_t phys = (pte & PAGE_MASK_4KB) | (vaddr & 0xFFF);
-        walk_success_log(vaddr, dirbase, phys);
-        return phys;
+        return finish((pte & PAGE_MASK_4KB) | (vaddr & 0xFFF));
     }
 
     // ============================================================
