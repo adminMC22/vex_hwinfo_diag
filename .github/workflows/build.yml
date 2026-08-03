@@ -49,3 +49,11 @@ jobs:
         path: x64/Release/sky_diag.exe
         compression-level: 0
         if-no-files-found: warn
+
+    - name: Upload asmmap64.sys artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: asmmap64.sys
+        path: drivers/asmmap64.sys
+        compression-level: 0
+        if-no-files-found: warn

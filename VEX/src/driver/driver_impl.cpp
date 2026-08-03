@@ -52,52 +52,51 @@ namespace sky::driver {
     #define TS_IOCTL_READ  0x80006498
 
     // --- Backend selection ---
-    static enum { BACKEND_NONE, BACKEND_THROTTLESTOP } g_backend = BACKEND_NONE;
-    // struct RTCPhysMem {
-    //     UINT64 phys_address;  // Physical address to read/write
-    //     UINT32 size;          // Size in bytes
-    //     BYTE   data[];        // For write: source data, for read: dest buffer
-    // };
+    static enum { BACKEND_NONE, BACKEND_THROTTLESTOP, BACKEND_ASMMAP64 } g_backend = BACKEND_NONE;
 
-    // RTCore64 actual IOCTL codes (from reverse-engineering RTCore64.sys)
-    // Read physical memory: IOCTL 0x9C40258C, Method::Buffered
-    // Write physical memory: IOCTL 0x9C402590, Method::Buffered
-    //
-    // The real structure for reads:
-    //   Input:  struct { UINT64 phys_addr; UINT32 size; } (12 bytes input)
-    //   Output: BYTE[size] containing the read data
-    // OR
-    //   Single buffer with structured format:
-    //   [0..7]   = 0 (padding/reserved)
-    //   [8..15]  = physical address
-    //   [16..19] = size to read
-    //   [20..]   = output buffer (must be large enough for 'size' bytes)
-
-    #define RTC_IOCTL_READ  0x9C40258C
-    #define RTC_IOCTL_WRITE 0x9C402590
-
-    // Alternative IOCTL codes (some versions use different codes)
-    #define RTC_IOCTL_READ_ALT  0x9C406000
-    #define RTC_IOCTL_WRITE_ALT 0x9C406004
+    // RTCore64 (corrected): read IOCTL is 0x80002048, ReadSize is hard-capped
+    // to 1/2/4 bytes — NOT bulk. 0x9C40258C is NOT an RTCore64 code; it is
+    // asmmap64's UNMAP IOCTL (see below). The old "0x9C40258C = RTCore64
+    // bulk read" comment was wrong — that constant belongs to ASMMAP64.
 
     #define PAGE_MASK_4KB  0xFFFFFFFFFFFFF000ULL
     #define PAGE_MASK_2MB  0xFFFFFFFFFFE00000ULL
     #define PAGE_MASK_1GB  0xFFFFFC0000000000ULL
+
+    // --- ASMMAP64 backend (ASUS 2009, section-map class) ---
+    // Device: \\.\ASMMAP64  (symlink \DosDevices\ASMMAP64)
+    // Opens \Device\PhysicalMemory (ZwOpenSection, rights 0xF001F) and
+    // ZwMapViewOfSection maps physical RAM directly into USER space — the
+    // same class as WinIo/Phymem. Holes are NOT in the section, so a hole
+    // can never be mapped and can never machine-check; 64-bit phys reaches
+    // all installed RAM (this box: 8GB), which ThrottleStop cannot do
+    // (its MmMapIoSpace MCEs above ~427MB).
+    //
+    // Map IOCTL 0x9C402580 (METHOD_BUFFERED, handler verified by disasm):
+    //   Input struct (>= 0x18 bytes):
+    //     +0x00 u32 phys_lo
+    //     +0x04 u32 phys_hi      -> 64-bit physical base
+    //     +0x10 u32 size         (input length checked >= 0x18; passed as
+    //                             view length)
+    //   Mapped user VA written back into input[0x08..0x0C] (lo/hi dwords).
+    // Unmap IOCTL 0x9C40258C: tears down the current view.
+    #define ASMMAP_IOCTL_MAP   0x9C402580
+    #define ASMMAP_IOCTL_UNMAP 0x9C40258C
 
     HANDLE g_hwinfo_device = INVALID_HANDLE_VALUE;
 
     // ============================================================
     // Load and connect ThrottleStop driver
     // ============================================================
-    static std::string write_embedded_driver() {
-        // Write embedded ThrottleStop driver bytes to a random temp path
+    static std::string write_embedded_driver(const unsigned char* data, size_t size) {
+        // Write embedded driver bytes to a random temp path
         char temp_dir[MAX_PATH + 1] = { 0 };
         if (!GetTempPathA(MAX_PATH, temp_dir)) {
             // Fallback to Windows\\Temp
             strcpy(temp_dir, "C:\\Windows\\Temp\\");
         }
 
-        // Generate random filename (no "throttlestop" in the name)
+        // Generate random filename (no driver name in it)
         char filename[MAX_PATH + 1] = { 0 };
         srand(GetTickCount() ^ (DWORD)(uintptr_t)&filename);
         snprintf(filename, sizeof(filename), "%sdrv_%08x.tmp",
@@ -115,11 +114,10 @@ namespace sky::driver {
         }
 
         DWORD written = 0;
-        BOOL ok = WriteFile(hFile, THROTTLESTOP_SYS_DATA,
-            THROTTLESTOP_SYS_SIZE, &written, NULL);
+        BOOL ok = WriteFile(hFile, data, (DWORD)size, &written, NULL);
         CloseHandle(hFile);
 
-        if (!ok || written != THROTTLESTOP_SYS_SIZE) {
+        if (!ok || written != size) {
             LOG_ERROR("Failed to write embedded driver");
             DeleteFileA(filename);
             return "";
@@ -132,7 +130,7 @@ namespace sky::driver {
 
     static std::string find_throttlestop_driver() {
         // Phase 1: Extract embedded driver to random temp path
-        std::string embedded = write_embedded_driver();
+        std::string embedded = write_embedded_driver(THROTTLESTOP_SYS_DATA, THROTTLESTOP_SYS_SIZE);
         if (!embedded.empty()) return embedded;
 
         LOG_INFO("Embedded extraction failed, trying disk lookup...");
@@ -151,6 +149,11 @@ namespace sky::driver {
         return "";
     }
 
+    // Shared driver loading helper (defined below; forward-declared for
+    // connect_throttlestop which runs before its definition).
+    static HANDLE load_driver_service(const char* svc_name, const char* device_path,
+                                      const std::string& sys_path);
+
     static bool connect_throttlestop() {
         LOG_INFO("=== Trying ThrottleStop backend ===");
 
@@ -162,6 +165,7 @@ namespace sky::driver {
             LOG_INFO("ThrottleStop device already open");
             g_hwinfo_device = h;
             g_backend = BACKEND_THROTTLESTOP;
+            sky::driver::write_state_log("backend=THROTTLESTOP mode=ioctl");
             return true;
         }
         LOG_INFO("Device not open — trying to load driver");
@@ -174,14 +178,29 @@ namespace sky::driver {
         }
         LOG_INFO("Found throttlestop.sys at: " + sys_path);
 
+        h = load_driver_service("ThrottleStop", "\\\\.\\ThrottleStop", sys_path);
+        if (h == INVALID_HANDLE_VALUE) {
+            LOG_ERROR("Cannot open \\\\.\\ThrottleStop after loading");
+            return false;
+        }
+
+        g_hwinfo_device = h;
+        g_backend = BACKEND_THROTTLESTOP;
+        LOG_INFO("ThrottleStop backend ready");
+        return true;
+    }
+
+    // Shared driver loading: write the .sys, create+start a service via SC
+    // Manager, fall back to NtLoadDriver, then open the device.
+    static HANDLE load_driver_service(const char* svc_name, const char* device_path,
+                                      const std::string& sys_path) {
         // Load via SC Manager (reliable method)
         SC_HANDLE scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_ALL_ACCESS);
         if (!scm) {
             LOG_WARNING("OpenSCManager failed — trying NtLoadDriver");
-            // Fall through to NtLoadDriver below
         } else {
             // Remove any stale service
-            SC_HANDLE svc = OpenServiceA(scm, "ThrottleStop", SERVICE_ALL_ACCESS);
+            SC_HANDLE svc = OpenServiceA(scm, svc_name, SERVICE_ALL_ACCESS);
             if (svc) {
                 SERVICE_STATUS ss;
                 ControlService(svc, SERVICE_CONTROL_STOP, &ss);
@@ -190,7 +209,7 @@ namespace sky::driver {
             }
 
             std::string nt_path = "\\??\\" + sys_path;
-            svc = CreateServiceA(scm, "ThrottleStop", "ThrottleStop",
+            svc = CreateServiceA(scm, svc_name, svc_name,
                 SERVICE_ALL_ACCESS, SERVICE_KERNEL_DRIVER,
                 SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
                 nt_path.c_str(), NULL, NULL, NULL, NULL, NULL);
@@ -198,25 +217,26 @@ namespace sky::driver {
                 BOOL ok = StartServiceA(svc, 0, NULL);
                 CloseServiceHandle(svc);
                 if (ok || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
-                    LOG_INFO("ThrottleStop driver loaded via SC Manager");
+                    LOG_INFO(std::string(svc_name) + " driver loaded via SC Manager");
                 }
             }
             CloseServiceHandle(scm);
         }
 
         // If SC Manager failed, try NtLoadDriver
-        if (CreateFileA("\\\\.\\ThrottleStop", GENERIC_READ, 0, NULL,
+        if (CreateFileA(device_path, GENERIC_READ, 0, NULL,
                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL) == INVALID_HANDLE_VALUE) {
             BOOLEAN priv_old = FALSE;
             RtlAdjustPrivilege(SE_LOAD_DRIVER_PRIVILEGE, TRUE, FALSE, &priv_old);
 
-            std::wstring wreg = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\ThrottleStop";
+            std::wstring wreg = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\";
+            for (size_t i = 0; svc_name[i]; i++) wreg += (wchar_t)svc_name[i];
             std::string img_path = "\\??\\" + sys_path;
 
             // Create registry entries
             HKEY hKey;
             if (RegCreateKeyExA(HKEY_LOCAL_MACHINE,
-                    "SYSTEM\\CurrentControlSet\\Services\\ThrottleStop",
+                    (std::string("SYSTEM\\CurrentControlSet\\Services\\") + svc_name).c_str(),
                     0, NULL, 0, KEY_ALL_ACCESS, NULL, &hKey, NULL) == ERROR_SUCCESS) {
                 RegSetValueExA(hKey, "ImagePath", 0, REG_SZ,
                     (const BYTE*)img_path.c_str(), (DWORD)(img_path.length() + 1));
@@ -234,22 +254,50 @@ namespace sky::driver {
             us.Length = (USHORT)(wreg.length() * sizeof(wchar_t));
             us.MaximumLength = us.Length + sizeof(wchar_t);
             NTSTATUS st = NtLoadDriver(&us);
-            LOG_INFO("NtLoadDriver: 0x" + std::format("{:08x}", (unsigned long)st));
+            LOG_INFO("NtLoadDriver(" + std::string(svc_name) + "): 0x" +
+                std::format("{:08x}", (unsigned long)st));
         }
 
         // Try opening the device again
         Sleep(500);
-        h = CreateFileA("\\\\.\\ThrottleStop",
+        return CreateFileA(device_path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    }
+
+    static bool connect_asmmap64() {
+        LOG_INFO("=== Trying ASMMAP64 backend (section-map, all RAM) ===");
+
+        // Try to open existing device first (kdmapper-loaded)
+        HANDLE h = CreateFileA("\\\\.\\ASMMAP64",
             GENERIC_READ | GENERIC_WRITE, 0, NULL,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            LOG_INFO("ASMMAP64 device already open");
+            g_hwinfo_device = h;
+            g_backend = BACKEND_ASMMAP64;
+            sky::driver::write_state_log("backend=ASMMAP64 mode=map");
+            return true;
+        }
+        LOG_INFO("Device not open — trying to load driver");
+
+        // Extract embedded asmmap64.sys and load it
+        std::string sys_path = write_embedded_driver(ASMMAP64_SYS_DATA, ASMMAP64_SYS_SIZE);
+        if (sys_path.empty()) {
+            LOG_WARNING("asmmap64.sys extraction failed");
+            return false;
+        }
+        LOG_INFO("Extracted asmmap64.sys at: " + sys_path);
+
+        h = load_driver_service("ASMMAP64", "\\\\.\\ASMMAP64", sys_path);
         if (h == INVALID_HANDLE_VALUE) {
-            LOG_ERROR("Cannot open \\\\.\\ThrottleStop after loading");
+            LOG_ERROR("Cannot open \\\\.\\ASMMAP64 after loading");
             return false;
         }
 
         g_hwinfo_device = h;
-        g_backend = BACKEND_THROTTLESTOP;
-        LOG_INFO("ThrottleStop backend ready");
+        g_backend = BACKEND_ASMMAP64;
+        sky::driver::write_state_log("backend=ASMMAP64 mode=map");
+        LOG_INFO("ASMMAP64 backend ready — reads map PhysicalMemory into user space");
         return true;
     }
 
@@ -274,16 +322,21 @@ namespace sky::driver {
         // Seed RNG for read pattern jitter
         srand(GetTickCount());
 
-        LOG_INFO("=== ThrottleStop only (no fallback drivers) ===");
+        // ASMMAP64 first: it maps \Device\PhysicalMemory into USER space, so
+        // reads above the ThrottleStop WHEA ceiling (~427MB) are possible —
+        // this is the fix for the NO_PT4K verdict (tables live above 416MB).
+        LOG_INFO("=== Trying ASMMAP64, then ThrottleStop ===");
+        if (connect_asmmap64()) {
+            LOG_INFO("Connected to ASMMAP64 backend");
+            return true;
+        }
+        LOG_INFO("ASMMAP64 unavailable — falling back to ThrottleStop");
         if (connect_throttlestop()) {
             LOG_INFO("Connected to ThrottleStop backend");
             return true;
         }
 
-        // ThrottleStop only — no RTCore, no HWiNFO, no GIO fallbacks.
-        // Those drivers are easily detected by Vanguard and increase risk.
-        LOG_ERROR("ThrottleStop driver not available — cannot proceed");
-        LOG_ERROR("Place throttlestop.sys in Temp/ or run with driver pre-loaded");
+        LOG_ERROR("No driver available — cannot proceed");
         g_backend = BACKEND_NONE;
         g_hwinfo_device = INVALID_HANDLE_VALUE;
         return false;
@@ -296,11 +349,10 @@ namespace sky::driver {
     // IOCTL codes:
     // #define THROTTLE_IOCTL CTL_CODE(FILE_DEVICE_UNKNOWN, 0x6498, METHOD_BUFFERED, FILE_READ_ACCESS)
     #define TS_IOCTL_READ 0x80006498
-    // Bulk physical read (RTCore64-style buffered IOCTL; the ThrottleStop
-    // driver family also implements it).
-    //   Input : struct { UINT64 phys_addr; UINT32 size; }   (12 bytes)
-    //   Output: the requested bytes (Method::Buffered)
-    #define TS_IOCTL_READ_BULK 0x9C40258C
+    // NOTE: 0x9C40258C is NOT a ThrottleStop bulk-read code — it is
+    // ASMMAP64's UNMAP IOCTL (see the ASMMAP64 block above). The probe
+    // below therefore always reports "NOT supported" on TS, which is the
+    // honest verdict (TS reads 1/2/4/8 bytes per call only).
 
     static uint64_t s_total_phys = 0;
 
@@ -317,6 +369,14 @@ namespace sky::driver {
         return s_total_phys;
     }
 
+    // Highest physical address the current backend may safely read
+    // (exclusive). ThrottleStop machine-checks above ~416MB on this box;
+    // ASMMAP64 maps \Device\PhysicalMemory and can reach all installed RAM.
+    uintptr_t phys_read_cap() {
+        if (g_backend == BACKEND_ASMMAP64) return (uintptr_t)get_total_phys();
+        return 0x1A000000ULL;  // TS WHEA ceiling
+    }
+
     // Is this physical address range inside installed RAM?
     // ThrottleStop's driver uses MmMapIoSpace internally; probing an
     // address beyond RAM (or in an MMIO hole) can bugcheck the system
@@ -330,40 +390,108 @@ namespace sky::driver {
         return true;
     }
 
-    // Single bulk IOCTL read. Callers must validate pa/size first.
-    static bool read_physical_bulk(uintptr_t phys_addr, void* buffer, size_t size) {
-        if (g_hwinfo_device == INVALID_HANDLE_VALUE) return false;
-        if (size == 0 || size > 0x10000) return false;  // keep IOCTL buffers sane
-
-        struct { uint64_t phys; uint32_t len; } in = { (uint64_t)phys_addr, (uint32_t)size };
-        DWORD returned = 0;
-        BOOL ok = DeviceIoControl(g_hwinfo_device, TS_IOCTL_READ_BULK,
-            &in, sizeof(in), buffer, (DWORD)size, &returned, nullptr);
-        if (!ok) return false;
-        return returned == size;
+    static size_t bulk_max_chunk() {
+        // ASMMAP64: windowed map — any size served from a mapped view
+        // (physscan uses 64KB chunks; each chunk is a map+memcpy).
+        if (g_backend == BACKEND_ASMMAP64) return 0x10000;
+        // ThrottleStop: reads are 1/2/4/8 bytes per IOCTL, no bulk path
+        // (verified by disasm; the old 0x9C40258C probe was asmmap64's
+        // UNMAP code and always failed on TS — NO_BULK was correct).
+        return 0;
     }
 
-    // Bulk capability is probed once with reads of the first page (real-mode
-    // IVT / BIOS area — always present and safe). We discover the LARGEST
-    // chunk the driver accepts: 64KB when available (4GB scan = 65K IOCTLs,
-    // ~seconds), else 4KB (1M IOCTLs, ~a minute), else only 1-byte reads.
-    static bool s_bulk_probed = false;
-    static size_t s_bulk_max = 0;  // 0 = bulk unsupported
+    // ============================================================
+    // ASMMAP64 map-based read path
+    // ============================================================
+    // One map IOCTL (0x9C402580) maps a physical range into USER space;
+    // reads are then plain memcpy from the mapped VA — zero per-read
+    // IOCTLs. A 4MB window is cached so sequential page-walk reads stay
+    // inside it. Because the view comes from \Device\PhysicalMemory,
+    // holes are absent from the section and can never machine-check.
+    static uintptr_t s_map_base = 0;
+    static size_t    s_map_size = 0;
+    static uintptr_t s_map_va   = 0;
+    static bool      s_map_valid = false;
 
-    static size_t bulk_max_chunk() {
-        if (!s_bulk_probed) {
-            s_bulk_probed = true;
-            std::vector<uint8_t> probe(0x10000);
-            if (pa_valid(0x1000, 0x10000) && read_physical_bulk(0x1000, probe.data(), 0x10000)) {
-                s_bulk_max = 0x10000;
-            } else if (pa_valid(0x1000, 0x1000) && read_physical_bulk(0x1000, probe.data(), 0x1000)) {
-                s_bulk_max = 0x1000;
+    static bool asmmap_map(uintptr_t pa, size_t size, uintptr_t& out_va) {
+        // Input (>= 0x18): {u32 phys_lo@0, u32 phys_hi@4, u32 size@0x10}
+        // Mapped user VA written back into input[0x08..0x0C] (lo/hi dwords).
+        struct {
+            uint32_t phys_lo;
+            uint32_t phys_hi;
+            uint32_t va_lo;
+            uint32_t va_hi;
+            uint32_t size;
+            uint32_t pad;
+        } in = {};
+        in.phys_lo = (uint32_t)(pa & 0xFFFFFFFF);
+        in.phys_hi = (uint32_t)(pa >> 32);
+        in.size    = (uint32_t)size;
+        DWORD returned = 0;
+        BOOL ok = DeviceIoControl(g_hwinfo_device, ASMMAP_IOCTL_MAP,
+            &in, sizeof(in), &in, sizeof(in), &returned, nullptr);
+        if (!ok) return false;
+        out_va = ((uintptr_t)in.va_hi << 32) | in.va_lo;
+        return out_va != 0;
+    }
+
+    static void asmmap_unmap() {
+        DWORD returned = 0;
+        DeviceIoControl(g_hwinfo_device, ASMMAP_IOCTL_UNMAP,
+            nullptr, 0, nullptr, 0, &returned, nullptr);
+        s_map_valid = false;
+    }
+
+    static bool read_physical_asmmap(uintptr_t phys_addr, void* buffer, size_t size) {
+        if (size == 0) return false;
+
+        // Serve from the cached window when possible.
+        if (s_map_valid && phys_addr >= s_map_base &&
+            phys_addr + size <= s_map_base + s_map_size) {
+            __try {
+                memcpy(buffer, (void*)(s_map_va + (phys_addr - s_map_base)), size);
+                return true;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                // Hole page faulted; drop the window.
+                s_map_valid = false;
+                return false;
             }
-            LOG_INFO(s_bulk_max
-                ? "bulk read IOCTL: supported (max chunk 0x" + std::format("{:x}", s_bulk_max) + ")"
-                : "bulk read IOCTL: NOT supported (1-byte fallback)");
         }
-        return s_bulk_max;
+
+        // New window: 4MB default, page-aligned, must cover the request.
+        uintptr_t base = phys_addr & ~0xFFFULL;
+        uintptr_t need = phys_addr + size;
+        size_t win = 0x400000;
+        if (base + win < need) win = (size_t)(need - base);
+        win = (win + 0xFFF) & ~0xFFFULL;
+        uint64_t total = get_total_phys();
+        if (base + win > total) win = (size_t)(total - base);
+        if (win < (size_t)(need - base)) return false;  // cannot cover
+
+        if (s_map_valid) asmmap_unmap();
+        uintptr_t va = 0;
+        if (!asmmap_map(base, win, va)) {
+            // The 4MB window may straddle a reserved hole (iGPU stolen
+            // region etc.) that ZwMapViewOfSection refuses. Fall back to a
+            // single-page map covering just this read — never skip a valid
+            // page because of window granularity.
+            uintptr_t pg = phys_addr & ~0xFFFULL;
+            size_t pg_sz = (size_t)(((phys_addr + size + 0xFFF) & ~0xFFFULL) - pg);
+            if (!asmmap_map(pg, pg_sz, va)) return false;
+            base = pg;
+            win = pg_sz;
+        }
+        s_map_base = base;
+        s_map_size = win;
+        s_map_va   = va;
+        s_map_valid = true;
+        __try {
+            memcpy(buffer, (void*)(va + (phys_addr - base)), size);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            s_map_valid = false;
+            return false;
+        }
     }
 
     static bool read_physical(uintptr_t phys_addr, void* buffer, size_t size) {
@@ -381,18 +509,14 @@ namespace sky::driver {
                 " sz=" + std::to_string(size));
         }
 
+        // === ASMMAP64 backend: windowed PhysicalMemory map ===
+        if (g_backend == BACKEND_ASMMAP64)
+            return read_physical_asmmap(phys_addr, buffer, size);
+
         // === ThrottleStop backend ===
         if (g_backend == BACKEND_THROTTLESTOP) {
-            // Multi-byte reads up to the driver's bulk limit use the bulk
-            // IOCTL (probed once). This is what makes physical scans
-            // feasible — the 1-byte path below would take hours over a
-            // multi-GB range.
-            if (size > 1 && size <= bulk_max_chunk()) {
-                if (read_physical_bulk(phys_addr, buffer, size))
-                    return true;
-                // Bulk failed for this range; fall through to the chunked
-                // path so small cross-range reads still work.
-            }
+            // TS reads 1/2/4/8 bytes per IOCTL (verified by disasm) — no
+            // bulk path, so every multi-byte read is chunked below.
             uint8_t* dst = (uint8_t*)buffer;
             size_t remaining = size;
             uintptr_t addr = phys_addr;
@@ -708,12 +832,18 @@ namespace sky::driver {
             }
         }
 
-        // 2) Limited physical scan: [16MB, min(2GB, total_phys)] at 2MB steps.
-        //    This is the range where the ntoskrnl image is loaded on Win10 x64.
+        // 2) Limited physical scan: [16MB, min(2GB, cap, total_phys)] at 2MB
+        //    steps. This is the range where the ntoskrnl image is loaded on
+        //    Win10 x64. The scan NEVER exceeds the backend cap: on ThrottleStop
+        //    that is the 416MB WHEA ceiling (reads above machine-check), on
+        //    ASMMAP64 it is total RAM. The heuristic above almost always hits
+        //    first, so this is just a safety net.
         if (!found) {
-            LOG_INFO("kernel_phys_offset: heuristic miss, scanning [16MB..2GB) at 2MB...");
+            LOG_INFO("kernel_phys_offset: heuristic miss, scanning [16MB..cap) at 2MB...");
             uint64_t scan_limit = get_total_phys();
             if (scan_limit > 0x80000000ULL) scan_limit = 0x80000000ULL;
+            uint64_t cap = phys_read_cap();
+            if (scan_limit > cap) scan_limit = cap;
             for (uintptr_t pa = 0x1000000; pa + 0x200000 <= scan_limit; pa += 0x200000) {
                 if (read_physical(pa, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
                     if (pe_matches(pa, ntk_size)) {
@@ -768,13 +898,14 @@ namespace sky::driver {
     // candidate page table and require phys == known image PA. A random pool
     // page cannot pass this — it is a full 4-level walk with a known answer.
     //
-    // SAFETY BOUND: this box machine-checks (WHEA 0x124) on physical reads
-    // above ~0x1A000000 (416MB). Every table address the walk touches must
-    // stay below that ceiling, or the candidate is rejected instead of read.
+    // SAFETY BOUND: ThrottleStop machine-checks (WHEA 0x124) on physical
+    // reads above ~0x1A000000 (416MB) on this box. Every table address the
+    // walk touches must stay below the backend's cap, or the candidate is
+    // rejected instead of read. ASMMAP64 (the map backend) has no such cap.
     bool verify_pml4_for_kernel(uintptr_t pml4_pa, uintptr_t vbase, uintptr_t pbase) {
         if (!pml4_pa || !vbase || !pbase) return false;
         if (pml4_pa & 0xFFF) return false;                 // must be page-aligned
-        constexpr uintptr_t kSafeCeil = 0x1A000000ULL;     // BSOD zone is above
+        const uintptr_t kSafeCeil = phys_read_cap();       // backend-aware
 
         uintptr_t addr = pml4_pa + ((vbase >> 39) & 0x1FF) * 8;   // PML4E
         for (int level = 0; level < 4; level++) {
@@ -829,11 +960,15 @@ namespace sky::driver {
         }
 
         void unload() override {
+            if (g_backend == BACKEND_ASMMAP64 && s_map_valid) {
+                asmmap_unmap();
+            }
             if (g_hwinfo_device != INVALID_HANDLE_VALUE) {
                 CloseHandle(g_hwinfo_device);
                 g_hwinfo_device = INVALID_HANDLE_VALUE;
             }
-            // Try unloading ThrottleStop service
+            // Try unloading whichever service we created
+            unload_driver_generic("ASMMAP64");
             unload_driver_generic("ThrottleStop");
             m_init = false;
             g_backend = BACKEND_NONE;

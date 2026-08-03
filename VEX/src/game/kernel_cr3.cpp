@@ -70,18 +70,26 @@ namespace sky::game {
             return 0;
         }
 
-        // Three-tier scan ranges (System PML4 usually in tier 0).
+        // Tiered scan ranges. ASMMAP64 (the map backend) reaches all RAM,
+        // so tiers now extend to 8GB; each range is clamped to the backend's
+        // safe cap below (ThrottleStop keeps its 416MB ceiling).
         static constexpr uintptr_t kRanges[][2] = {
             { 0x100000, 0x800000 },    // 1MB-8MB
             { 0x800000,  0x4000000 },  // 8MB-64MB
             { 0x4000000, 0x10000000 }, // 64MB-256MB
+            { 0x10000000, 0x40000000 },// 256MB-1GB
+            { 0x40000000, 0x100000000 },// 1GB-4GB
+            { 0x100000000, 0x200000000 },// 4GB-8GB (ASMMAP64 only)
         };
         static std::chrono::steady_clock::time_point s_last_prog{};
         static int s_rejected = 0;
 
-        for (int range = 0; range < 3; range++) {
+        const uintptr_t cap = sky::driver::phys_read_cap();
+
+        for (int range = 0; range < 6; range++) {
             uintptr_t scan_start = kRanges[range][0];
-            uintptr_t pass_end = kRanges[range][1];
+            uintptr_t pass_end = std::min(kRanges[range][1], cap);
+            if (scan_start >= cap) break;
             sky::driver::write_state_log("attach=TRY pml4_scan range=" +
                 std::to_string(range) +
                 " 0x" + std::format("{:x}", scan_start) +
@@ -105,12 +113,13 @@ namespace sky::game {
                 if (!(lo & 1)) continue;                    // present bit
                 if (!(lo & 0xFFFFF000)) continue;           // frame bits 12-31 nonzero
 
-                // Stage A: high dword (offset 0xF84) — frame bits 32-47 +
-                // reserved bits must be 0 (phys < 2^48); NX bit 31 free.
+                // Stage A: high dword (offset 0xF84) — frame bits 32-51 live
+                // here (hi bits 0-19, may be nonzero on 8GB boxes), reserved
+                // bits 52-62 (hi bits 20-30) must be 0, NX bit 31 free.
                 uint32_t hi = 0;
                 if (!drv->read_physical(pa + 0xF84, &hi, sizeof(hi)))
                     continue;
-                if (hi != 0 && hi != 0x80000000) continue;  // NOT a real entry
+                if (hi & 0x7FF00000) continue;       // reserved bits set → not a real entry
 
                 // Stage A2: second kernel entry PML4E[0x1F8] (offset 0xFC0)
                 // must also look like a real entry. Real PML4s have many
@@ -124,7 +133,7 @@ namespace sky::game {
                 uint32_t hi2 = 0;
                 if (!drv->read_physical(pa + 0xFC4, &hi2, sizeof(hi2)))
                     continue;
-                if (hi2 != 0 && hi2 != 0x80000000) continue;
+                if (hi2 & 0x7FF00000) continue;
 
                 // Stage B: SELF-VERIFY — walk the kernel image VA through
                 // this candidate. Only a real PML4 maps it to the known PA.
@@ -206,18 +215,23 @@ namespace sky::game {
         // MBs (the boot allocator hands out the lowest pages first), so we
         // hit them in tier 0/1 almost always. Extend only on miss.
         //
-        // HARD CAP 0x1A000000 (416MB): the user's machine raises a machine
-        // check (WHEA_UNCORRECTABLE_ERROR) on physical reads somewhere in
-        // 427-428MB (observed 0x124 BSOD mid-scan). Every tier is clamped to
-        // this ceiling — scanning above it is not an option on this box.
+        // CAP: the backend decides how far physical reads are safe.
+        // ThrottleStop machine-checks (WHEA 0x124) somewhere in 427-428MB
+        // (observed 0x124 BSOD mid-scan), so TS clamps to 416MB. ASMMAP64
+        // maps \Device\PhysicalMemory — it reaches all installed RAM (8GB),
+        // which is exactly what the NO_PT4K verdict requires: tables above
+        // the old ceiling. Ranges extend to 8GB; each is clamped below.
         static constexpr uintptr_t kRanges[][2] = {
             { 0x100000,  0x800000 },   // 1MB-8MB
             { 0x800000,  0x4000000 },  // 8MB-64MB
             { 0x4000000, 0x10000000 }, // 64MB-256MB
-            { 0x10000000, 0x1A000000 },// 256MB-416MB (capped: BSOD zone above)
+            { 0x10000000, 0x40000000 },// 256MB-1GB
+            { 0x40000000, 0x100000000 },// 1GB-4GB
+            { 0x100000000, 0x200000000 },// 4GB-8GB (ASMMAP64 only)
         };
         uintptr_t cap = max_physical();
-        if (cap > 0x1A000000ULL) cap = 0x1A000000ULL;
+        uintptr_t drv_cap = sky::driver::phys_read_cap();
+        if (cap > drv_cap) cap = drv_cap;
         sky::driver::write_state_log("attach=TRY pml4_rev cap=0x" +
             std::format("{:x}", cap) + " total=0x" +
             std::format("{:x}", max_physical()));
@@ -247,7 +261,7 @@ namespace sky::game {
             uint32_t hi = (uint32_t)(e >> 32);
             if (!(lo & 1)) return false;                       // present bit
             if ((lo & 0xFFFFF000) != (want_frame & 0xFFFFF000)) return false; // frame bits 12-31
-            if (hi != 0 && hi != 0x80000000) return false;     // phys < 4GB (+NX)
+            if (hi & 0x7FF00000) return false;                 // reserved bits 52-62 must be 0 (NX free; frame 32-51 may be nonzero on 8GB boxes)
             out = e;
             return true;
         };
@@ -727,6 +741,12 @@ namespace sky::game {
 
         uintptr_t scan_start = 0x100000;
         uintptr_t full_end = max_physical();
+        // EPROCESS pool almost always lives below 4GB; with ASMMAP64 the
+        // whole range is reachable (and cheap — 64KB chunked reads), so
+        // only clamp for the TS backend (which can't read above 416MB
+        // anyway and bails via NO_BULK below).
+        if (sky::driver::phys_read_cap() < 0x100000000ULL)
+            full_end = std::min(full_end, sky::driver::phys_read_cap());
         if (full_end > 0x100000000ULL) full_end = 0x100000000ULL;  // cap at 4GB
         // Two-stage range: kernel pool (EPROCESS) almost always lives below
         // 2GB on typical machines, so the first pass is fast. Only if that

@@ -19,6 +19,11 @@ namespace sky::driver {
     // false if the image couldn't be located in physical memory.
     bool kernel_image_offset(uintptr_t* vbase, uintptr_t* pbase);
 
+    // Highest physical address the current backend may safely read
+    // (exclusive). ThrottleStop: ~416MB WHEA ceiling. ASMMAP64: all RAM.
+    // Scanners must never probe at or above this.
+    uintptr_t phys_read_cap();
+
     // Walk a kernel VA through a candidate PML4 page table and require the
     // result to match the known ntoskrnl physical base. Used to prove a
     // scanned page is a REAL PML4 (self-verifying attach bootstrap).
