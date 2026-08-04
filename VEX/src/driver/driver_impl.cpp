@@ -392,37 +392,97 @@ namespace sky::driver {
     static std::vector<PhysRange> s_ram_ranges;
     static bool s_ram_ranges_ready = false;
 
-    static void enum_ram_ranges() {
-        s_ram_ranges.clear();
-        // SystemMemoryListInformation (info class 80): the memory manager's
-        // page lists (zeroed/free/standby/modified/transition/active/pool/
-        // cache...). EVERY real RAM page is in exactly one list; MMIO and
-        // stolen regions are not pages and never appear. Union of all runs
-        // == all readable physical RAM.
+    // EFI memory map (UEFI): every physical region with its type.
+    // EfiConventionalMemory=7 is RAM; stolen/MMIO regions come back as
+    // EfiReservedMemoryType(0)/EfiUnusableMemory(10)/EfiMemoryMappedIO(11)
+    // and are excluded. This is a firmware table read (GetSystemFirmwareTable)
+    // — it does NOT go through NtQuerySystemInformation, so anti-cheat
+    // hooks that filter info class 80 (memory list layout is exactly what
+    // Vanguard hides) cannot falsify it.
+    static bool enum_ram_ranges_efi() {
+        UINT32 sz = GetSystemFirmwareTable('ACPI', 'FpMf', nullptr, 0);
+        if (sz < sizeof(uint64_t) * 5) return false;
+        std::vector<uint8_t> buf(sz);
+        UINT32 got = GetSystemFirmwareTable('ACPI', 'FpMf', buf.data(), sz);
+        if (got < sizeof(uint64_t) * 5) return false;
+        // EFI_MEMORY_DESCRIPTOR (40 bytes on x64):
+        //   Type(u32) Pad(u32) PhysicalStart(u64) VirtualStart(u64)
+        //   NumberOfPages(u64) Attribute(u64)
+        const uint8_t* p = buf.data();
+        const size_t desc_sz = 40;
+        std::vector<PhysRange> out;
+        for (size_t off = 0; off + desc_sz <= got; off += desc_sz) {
+            uint32_t type = *(const uint32_t*)(p + off);
+            if (type < 1 || type > 7) continue;   // 1-7 = RAM types only
+            uint64_t start = *(const uint64_t*)(p + off + 8);
+            uint64_t pages = *(const uint64_t*)(p + off + 24);
+            uint64_t bytes = pages << 12;
+            if (!start || !bytes || start + bytes < start) continue;
+            if (start + bytes > 0x1000000000ULL) continue;  // 64GB sanity
+            out.push_back({ (uintptr_t)start, (uintptr_t)(start + bytes) });
+        }
+        if (out.empty()) return false;
+        s_ram_ranges = std::move(out);
+        return true;
+    }
+
+    // Primary source: SystemMemoryListInformation (info class 80) — the
+    // memory manager's page lists (zeroed/free/standby/modified/transition/
+    // active/pool/cache...). EVERY real RAM page is in exactly one list;
+    // MMIO and stolen regions are not pages and never appear. Union of all
+    // runs == all readable physical RAM. Fails on machines whose anti-cheat
+    // hooks NtQuerySystemInformation (Vanguard filters class 80) — the EFI
+    // fallback above covers those.
+    static bool enum_ram_ranges_list() {
         ULONG need = 0;
         // Sizing call: returns STATUS_INFO_LENGTH_MISMATCH (not success)
         // while filling `need` with the required buffer size.
-        NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)80, nullptr, 0, &need);
-        if (need > sizeof(ULONG_PTR) * 13) {
-            std::vector<uint8_t> buf(need + 0x1000);
-            ULONG got = (ULONG)buf.size();
-            NTSTATUS st = NtQuerySystemInformation(
-                (SYSTEM_INFORMATION_CLASS)80, buf.data(), got, &got);
-            if (NT_SUCCESS(st) && got > sizeof(ULONG_PTR) * 13) {
-                // Header: 13 ULONG_PTR counters, then a variable-length
-                // array of SYSTEM_MEMORY_LIST_ENTRY {NextPage, PageCount}
-                // runs (one pair per contiguous run, all lists in order).
-                const size_t header = sizeof(ULONG_PTR) * 13;
-                const size_t n = (got - header) / (sizeof(ULONG_PTR) * 2);
-                const ULONG_PTR* p = (const ULONG_PTR*)(buf.data() + header);
-                for (size_t i = 0; i < n; i++) {
-                    ULONG_PTR pfn = p[i * 2];
-                    ULONG_PTR cnt = p[i * 2 + 1];
-                    if (!pfn || !cnt) continue;
-                    uintptr_t start = (uintptr_t)pfn << 12;
-                    uintptr_t end = start + ((uintptr_t)cnt << 12);
-                    if (end > start) s_ram_ranges.push_back({ start, end });
-                }
+        NTSTATUS st0 = NtQuerySystemInformation(
+            (SYSTEM_INFORMATION_CLASS)80, nullptr, 0, &need);
+        if (need <= sizeof(ULONG_PTR) * 13) {
+            write_state_log("ram_ranges=list_fail st0=0x" +
+                std::format("{:x}", (uint32_t)st0) + " need=0x" +
+                std::format("{:x}", need));
+            return false;
+        }
+        std::vector<uint8_t> buf(need + 0x1000);
+        ULONG got = (ULONG)buf.size();
+        NTSTATUS st = NtQuerySystemInformation(
+            (SYSTEM_INFORMATION_CLASS)80, buf.data(), got, &got);
+        if (!NT_SUCCESS(st) || got <= sizeof(ULONG_PTR) * 13) {
+            write_state_log("ram_ranges=list_fail st=0x" +
+                std::format("{:x}", (uint32_t)st) + " got=0x" +
+                std::format("{:x}", got));
+            return false;
+        }
+        // Header: 13 ULONG_PTR counters, then a variable-length array of
+        // SYSTEM_MEMORY_LIST_ENTRY {NextPage, PageCount} runs (one pair per
+        // contiguous run, all lists in order).
+        const size_t header = sizeof(ULONG_PTR) * 13;
+        const size_t n = (got - header) / (sizeof(ULONG_PTR) * 2);
+        const ULONG_PTR* p = (const ULONG_PTR*)(buf.data() + header);
+        std::vector<PhysRange> out;
+        for (size_t i = 0; i < n; i++) {
+            ULONG_PTR pfn = p[i * 2];
+            ULONG_PTR cnt = p[i * 2 + 1];
+            if (!pfn || !cnt) continue;
+            uintptr_t start = (uintptr_t)pfn << 12;
+            uintptr_t end = start + ((uintptr_t)cnt << 12);
+            if (end > start) out.push_back({ start, end });
+        }
+        if (out.empty()) return false;
+        s_ram_ranges = std::move(out);
+        return true;
+    }
+
+    static void enum_ram_ranges() {
+        s_ram_ranges.clear();
+        // Prefer the page-list source; fall back to the EFI memory map.
+        // Vanguard hooks class 80 on some builds — the EFI path exists
+        // specifically for that.
+        if (!enum_ram_ranges_list()) {
+            if (!enum_ram_ranges_efi()) {
+                write_state_log("ram_ranges=EFI_FAIL");
             }
         }
 
