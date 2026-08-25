@@ -480,10 +480,20 @@ namespace sky::driver {
         // Prefer the page-list source; fall back to the EFI memory map.
         // Vanguard hooks class 80 on some builds — the EFI path exists
         // specifically for that.
-        if (!enum_ram_ranges_list()) {
+        bool used_list = enum_ram_ranges_list();
+        if (!used_list) {
             if (!enum_ram_ranges_efi()) {
                 write_state_log("ram_ranges=EFI_FAIL");
             }
+        }
+        // Debug: log raw ranges from whichever source before validation
+        if (!s_ram_ranges.empty()) {
+            std::string src = used_list ? "list" : "efi";
+            std::string msg = "ram_ranges_raw=" + src + " count=" + std::to_string(s_ram_ranges.size());
+            uintptr_t raw_total = 0;
+            for (auto& r : s_ram_ranges) raw_total += r.end - r.start;
+            msg += " total=0x" + std::format("{:x}", raw_total);
+            write_state_log(msg);
         }
 
         // Sort + merge overlapping/adjacent ranges.
