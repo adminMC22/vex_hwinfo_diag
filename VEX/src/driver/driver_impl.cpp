@@ -513,7 +513,9 @@ namespace sky::driver {
         // the parse rather than risk treating a hole as readable. Note:
         // the lists sum to ALL managed PFN pages (~installed RAM), while
         // get_total_phys() reports usable RAM (stolen region excluded),
-        // so the upper bound is deliberately loose.
+        // so the upper bound is deliberately loose. On some builds the
+        // list includes duplicate/ghost entries; we accept up to 8x expect
+        // and rely on pa_valid's per-range check to gate reads.
         uintptr_t total = 0;
         for (auto& r : s_ram_ranges) total += r.end - r.start;
         uint64_t expect = get_total_phys();
@@ -522,7 +524,7 @@ namespace sky::driver {
             if (r.start <= 0x100000 && r.end >= 0x200000) low_ok = true;
         }
         bool sane = !s_ram_ranges.empty() && low_ok &&
-            total >= expect / 2 && total <= expect * 2;
+            total >= expect / 2 && total <= expect * 8;
 
         if (!sane) {
             // Fallback: only the band proven safe by 100+ ThrottleStop
