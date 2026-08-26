@@ -893,6 +893,7 @@ namespace sky::driver {
     // ntoskrnl.exe's PE header signature.
     static uintptr_t s_kernel_vbase = 0;
     static uintptr_t s_kernel_pbase = 0;
+    static uintptr_t ntk_size = 0;
     static bool s_kernel_offset_ready = false;
 
     // Minimal diagnostics: append one line to %TEMP%\app.log AND to
@@ -975,21 +976,31 @@ namespace sky::driver {
         // Get ntoskrnl.exe virtual base from system module list
         ULONG size = 0;
         NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, NULL, 0, &size);
+        write_state_log("kernel_offset_dbg NtQuery11_null status=0x" + std::format("{:x}", status) + " size=" + std::to_string(size));
         if (size == 0) return false;
 
         std::vector<uint8_t> buf(size);
         status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, buf.data(), size, &size);
+        write_state_log("kernel_offset_dbg NtQuery11_real status=0x" + std::format("{:x}", status));
         if (!NT_SUCCESS(status)) return false;
 
         auto modules = (PSYSTEM_MODULE_INFORMATION)buf.data();
+        write_state_log("kernel_offset_dbg module_count=" + std::to_string(modules->Count));
+        bool found_mod = false;
         for (ULONG i = 0; i < modules->Count; ++i) {
             auto& mod = modules->Module[i];
             std::string name((char*)mod.FullPathName + mod.OffsetToFileName);
             if (name == "ntoskrnl.exe") {
                 s_kernel_vbase = (uintptr_t)mod.ImageBase;
-                LOG_INFO("ntoskrnl virtual: 0x" + std::format("{:x}", s_kernel_vbase));
+                ntk_size = mod.ImageSize;
+                write_state_log("kernel_offset_dbg ntoskrnl vbase=0x" + std::format("{:x}", s_kernel_vbase) + " size=" + std::to_string(ntk_size));
+                found_mod = true;
                 break;
             }
+        }
+        if (!found_mod) {
+            write_state_log("kernel_offset_dbg ntoskrnl NOT IN MODULE LIST");
+            return false;
         }
         if (s_kernel_vbase == 0) return false;
         LOG_INFO("kernel_phys_offset: using heuristic to find kernel physical base...");
@@ -1007,16 +1018,6 @@ namespace sky::driver {
         //     matches ntoskrnl's size from the module list. All scan
         //     addresses are validated against installed RAM by read_physical,
         //     so this can never probe an invalid physical address.
-        uintptr_t ntk_size = 0;
-        for (ULONG i = 0; i < modules->Count; ++i) {
-            auto& mod = modules->Module[i];
-            std::string name((char*)mod.FullPathName + mod.OffsetToFileName);
-            if (name == "ntoskrnl.exe") {
-                ntk_size = mod.ImageSize;
-                break;
-            }
-        }
-
         uint8_t verify[2];
         bool found = false;
 
@@ -1029,6 +1030,7 @@ namespace sky::driver {
         };
         for (int64_t tweak : k_heuristic_tweaks) {
             uintptr_t guess = (uintptr_t)((int64_t)(s_kernel_vbase - 0xFFFFF80000000000ULL) + tweak);
+            write_state_log("kernel_offset_dbg heuristic_guess=0x" + std::format("{:x}", guess));
             if (read_physical(guess, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
                 if (pe_matches(guess, ntk_size)) {
                     s_kernel_pbase = guess;
@@ -1052,6 +1054,7 @@ namespace sky::driver {
             if (scan_limit > 0x80000000ULL) scan_limit = 0x80000000ULL;
             uint64_t cap = phys_read_cap();
             if (scan_limit > cap) scan_limit = cap;
+            write_state_log("kernel_offset_dbg scan_limit=0x" + std::format("{:x}", scan_limit) + " cap=0x" + std::format("{:x}", cap));
             for (uintptr_t pa = 0x1000000; pa + 0x200000 <= scan_limit; pa += 0x200000) {
                 if (read_physical(pa, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
                     if (pe_matches(pa, ntk_size)) {
