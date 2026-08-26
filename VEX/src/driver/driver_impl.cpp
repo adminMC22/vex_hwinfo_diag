@@ -1042,19 +1042,16 @@ namespace sky::driver {
             }
         }
 
-        // 2) Limited physical scan: [16MB, min(2GB, cap, total_phys)] at 2MB
-        //    steps. This is the range where the ntoskrnl image is loaded on
-        //    Win10 x64. The scan NEVER exceeds the backend cap: on ThrottleStop
-        //    that is the 416MB WHEA ceiling (reads above machine-check), on
-        //    ASMMAP64 it is total RAM. The heuristic above almost always hits
-        //    first, so this is just a safety net.
+        // 2) Limited physical scan: [16MB, cap] at 2MB steps. This is the
+        // range where the ntoskrnl image is loaded on Win10 x64. The
+        // scan NEVER exceeds the backend cap: on ThrottleStop that is
+        // the 416MB WHEA ceiling (reads above machine-check), on
+        // ASMMAP64 it is total RAM. The heuristic above almost always
+        // hits first, so this is just a safety net.
         if (!found) {
             LOG_INFO("kernel_phys_offset: heuristic miss, scanning [16MB..cap) at 2MB...");
-            uint64_t scan_limit = get_total_phys();
-            if (scan_limit > 0x80000000ULL) scan_limit = 0x80000000ULL;
-            uint64_t cap = phys_read_cap();
-            if (scan_limit > cap) scan_limit = cap;
-            write_state_log("kernel_offset_dbg scan_limit=0x" + std::format("{:x}", scan_limit) + " cap=0x" + std::format("{:x}", cap));
+            uint64_t scan_limit = phys_read_cap();
+            write_state_log("kernel_offset_dbg scan_limit=0x" + std::format("{:x}", scan_limit) + " cap=0x" + std::format("{:x}", scan_limit));
             for (uintptr_t pa = 0x1000000; pa + 0x200000 <= scan_limit; pa += 0x200000) {
                 if (read_physical(pa, verify, 2) && verify[0] == 'M' && verify[1] == 'Z') {
                     if (pe_matches(pa, ntk_size)) {
