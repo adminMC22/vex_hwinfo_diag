@@ -741,20 +741,16 @@ namespace sky::game {
 
         uintptr_t scan_start = 0x100000;
         uintptr_t full_end = max_physical();
-        // EPROCESS pool almost always lives below 4GB; with ASMMAP64 the
-        // whole range is reachable (and cheap — 64KB chunked reads), so
-        // only clamp for the TS backend (which can't read above 416MB
-        // anyway and bails via NO_BULK below).
         if (sky::driver::phys_read_cap() < 0x100000000ULL)
             full_end = std::min(full_end, sky::driver::phys_read_cap());
         if (full_end > 0x100000000ULL) full_end = 0x100000000ULL;  // cap at 4GB
-        // Two-stage range: kernel pool (EPROCESS) almost always lives below
-        // 2GB on typical machines, so the first pass is fast. Only if that
-        // misses do later passes extend to the full range.
-        static bool s_stage2 = false;
-        uintptr_t scan_end = s_stage2 ? full_end : std::min(full_end, 0x80000000ULL);
 
-        // Log the range whenever it changes (first pass + stage-2 pass).
+        // First pass: scan all available RAM (not just 2GB) — EPROCESS can
+        // live above 2GB on systems with >2GB RAM. The 2GB heuristic was
+        // wrong for this machine (RAM to 3.3GB).
+        uintptr_t scan_end = full_end;
+
+        // Log the range whenever it changes.
         static uintptr_t s_logged_end = 0;
         if (s_logged_end != scan_end) {
             s_logged_end = scan_end;
@@ -851,9 +847,6 @@ namespace sky::game {
             }
         }
 
-        if (!s_stage2 && scan_end < full_end) {
-            s_stage2 = true;  // stage-1 pass missed — extend next pass to full range
-        }
         static bool s_fail_logged = false;
         if (!s_fail_logged) {
             s_fail_logged = true;
