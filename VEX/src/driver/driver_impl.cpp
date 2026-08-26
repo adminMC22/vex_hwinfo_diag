@@ -513,19 +513,23 @@ namespace sky::driver {
         // the parse rather than risk treating a hole as readable. Note:
         // the lists sum to ALL managed PFN pages (~installed RAM), while
         // get_total_phys() reports usable RAM (stolen region excluded).
-        // On some builds the list includes duplicate/ghost entries (34GB
-        // on an 8GB box); we accept any total >= expect/2 and rely on
-        // pa_valid's per-range check to gate reads.
+        // On some builds the list includes duplicate/ghost entries (40GB
+        // on an 8GB box) that may not cover low memory; we accept any
+        // total >= expect/2 and rely on pa_valid's per-range check to
+        // gate reads.
         uintptr_t total = 0;
         for (auto& r : s_ram_ranges) total += r.end - r.start;
         uint64_t expect = get_total_phys();
         write_state_log("ram_ranges_sane total=0x" + std::format("{:x}", total) +
             " expect=0x" + std::format("{:x}", expect));
-        bool low_ok = false;
+        // Log individual ranges for diagnosis
+        std::string ranges_log = "ram_ranges_detail";
         for (auto& r : s_ram_ranges) {
-            if (r.start <= 0x100000 && r.end >= 0x200000) low_ok = true;
+            ranges_log += " 0x" + std::format("{:x}", r.start) +
+                         "-0x" + std::format("{:x}", r.end);
         }
-        bool sane = !s_ram_ranges.empty() && low_ok && total >= expect / 2;
+        write_state_log(ranges_log);
+        bool sane = !s_ram_ranges.empty() && total >= expect / 2;
 
         if (!sane) {
             // Fallback: only the band proven safe by 100+ ThrottleStop
