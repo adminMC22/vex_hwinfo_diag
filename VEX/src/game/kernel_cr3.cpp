@@ -802,6 +802,15 @@ namespace sky::game {
                 uintptr_t eproc_phys = str_phys - kImgPhys;
                 if (eproc_phys < scan_start) continue;
 
+                // DEBUG: log the actual 14-char name we found
+                static int s_dbg_names = 0;
+                if (s_dbg_names < 5) {
+                    char nm[15] = { 0 };
+                    drv->read_physical(str_phys, nm, 14);
+                    sky::driver::write_state_log("attach=TRY found_name=\"" + std::string(nm) + "\" at 0x" + std::format("{:x}", str_phys));
+                    s_dbg_names++;
+                }
+
                 // Validate PID / CR3 / PEB directly at physical offsets.
                 uint32_t pid = 0;
                 if (!drv->read_physical(eproc_phys + kPidPhys, &pid, sizeof(pid)))
