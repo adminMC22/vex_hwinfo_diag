@@ -209,9 +209,9 @@ namespace sky::game::engine {
                     std::vector<uint32_t> live_pids;
                     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
                     if (snap != INVALID_HANDLE_VALUE) {
-                        PROCESSENTRY32A pe = {};
+                        PROCESSENTRY32 pe = {};
                         pe.dwSize = sizeof(pe);
-                        if (Process32FirstA(snap, &pe)) {
+                        if (Process32First(snap, &pe)) {
                             do {
                                 char lower_name[16] = {0};
                                 for (size_t i = 0; i < sizeof(lower_name)-1 && pe.szExeFile[i]; i++)
@@ -219,7 +219,7 @@ namespace sky::game::engine {
                                 if (strcmp(lower_name, game_name) == 0) {
                                     live_pids.push_back(pe.th32ProcessID);
                                 }
-                            } while (Process32NextA(snap, &pe));
+                            } while (Process32Next(snap, &pe));
                         }
                         CloseHandle(snap);
                     }
