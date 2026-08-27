@@ -412,7 +412,7 @@ namespace sky::driver {
         uint64_t size  = (uint64_t)end - (uint64_t)start;
         uint64_t total = get_total_phys();
         if (!total) total = 0x40000000ULL;                    // 1GB floor if GlobalMemoryStatusEx failed
-        if (size > total * 2) return false;                   // no single range > 2x installed RAM
+        if (size > total) return false;                       // no single range > installed RAM
         if ((uint64_t)end > 0x1000000000ULL) return false;    // < 64GB physical ceiling
         return true;
     }
