@@ -1,9 +1,3 @@
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0A00
-#endif
-#ifndef WINVER
-#define WINVER 0x0A00
-#endif
 #include <include/common.hpp>
 #include <include/game/engine/game_engine.hpp>
 #include <include/render/render.hpp>

@@ -64,11 +64,16 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#ifndef WINVER
+#define WINVER 0x0A00
+#endif
 #include <windows.h>
 #include <tlhelp32.h>
 #include <psapi.h>
 #endif
-
 #include <xorstr.hpp>
 #include <nlohmann/json.hpp>
 
