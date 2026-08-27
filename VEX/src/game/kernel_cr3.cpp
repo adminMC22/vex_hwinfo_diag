@@ -3,9 +3,8 @@
 #include "../../include/driver/idriver.hpp"
 #include "../../include/game/kernel_cr3.hpp"
 #include "../../include/utils/logger.hpp"
-#include <tlhelp32.h>
-#include <algorithm>
 #include <vector>
+#include <algorithm>
 
 namespace sky::game {
 
@@ -760,8 +759,12 @@ namespace sky::game {
     };
     static const size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 
-    bool find_game_process_phys(GameProcessInfo& out, const char* name_prefix) {
+    bool find_game_process_phys(GameProcessInfo& out, const char* name_prefix, const std::vector<uint32_t>& live_pids) {
         if (!name_prefix || !name_prefix[0]) return false;
+        if (live_pids.empty()) {
+            sky::driver::write_state_log("attach=TRY physscan=NO_LIVE_PID");
+            return false;
+        }
         auto drv = sky::driver::g_driver;
 
         // Prefix length capped at the 15-byte ImageFileName field.
@@ -818,29 +821,6 @@ namespace sky::game {
         std::vector<uint8_t> chunk(chunk_size);
         auto saved_dtb = drv->get_dtb();
         static std::chrono::steady_clock::time_point s_last_prog{};
-
-        // --- Live PID snapshot (Toolhelp32) ---
-        std::vector<uint32_t> live_pids;
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snap != INVALID_HANDLE_VALUE) {
-            PROCESSENTRY32A pe = {};
-            pe.dwSize = sizeof(pe);
-            if (Process32FirstA(snap, &pe)) {
-                do {
-                    char lower_name[16] = {0};
-                    for (size_t i = 0; i < sizeof(lower_name)-1 && pe.szExeFile[i]; i++)
-                        lower_name[i] = (char)tolower((unsigned char)pe.szExeFile[i]);
-                    if (strcmp(lower_name, name_prefix) == 0) {
-                        live_pids.push_back(pe.th32ProcessID);
-                    }
-                } while (Process32NextA(snap, &pe));
-            }
-            CloseHandle(snap);
-        }
-        if (live_pids.empty()) {
-            sky::driver::write_state_log("attach=TRY physscan=NO_LIVE_PID");
-            return false;
-        }
 
         // Struct for candidates
         struct Candidate {

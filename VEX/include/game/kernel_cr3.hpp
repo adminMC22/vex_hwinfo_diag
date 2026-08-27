@@ -65,7 +65,8 @@ namespace sky::game {
     // (0x440 / 0x28 / 0x3B8). The ImageBaseAddress is then read through the
     // found CR3 and MZ-verified. Uses g_driver->read_physical() — must be
     // implemented by the backend (bulk IOCTL). DTB is restored on exit.
+    // live_pids: user-mode Toolhelp32 snapshot of target PIDs (pass empty to skip live check).
     // Returns false if the game is not found or validation fails.
-    bool find_game_process_phys(GameProcessInfo& out, const char* name_prefix);
+    bool find_game_process_phys(GameProcessInfo& out, const char* name_prefix, const std::vector<uint32_t>& live_pids = {});
 
 } // namespace sky::game

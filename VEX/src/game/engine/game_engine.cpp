@@ -4,6 +4,7 @@
 #include <include/game/offsets.hpp>
 #include <include/utils/logger.hpp>
 #include <include/game/sdk/fname_cache_context.hpp>
+#include <tlhelp32.h>
 
 namespace sky::game::engine {
     using namespace sky::utils;
@@ -205,7 +206,25 @@ namespace sky::game::engine {
                     }
                     // 3) EPROCESS-list walk (needs the kernel DTB above, or
                     //    a backend with full kernel VA→PA support).
-                    attached = sky::game::find_game_process(info, game_name);
+                    // Live PID snapshot (user-mode) for stale-EPROCESS rejection.
+                    std::vector<uint32_t> live_pids;
+                    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                    if (snap != INVALID_HANDLE_VALUE) {
+                        PROCESSENTRY32A pe = {};
+                        pe.dwSize = sizeof(pe);
+                        if (Process32FirstA(snap, &pe)) {
+                            do {
+                                char lower_name[16] = {0};
+                                for (size_t i = 0; i < sizeof(lower_name)-1 && pe.szExeFile[i]; i++)
+                                    lower_name[i] = (char)tolower((unsigned char)pe.szExeFile[i]);
+                                if (strcmp(lower_name, game_name) == 0) {
+                                    live_pids.push_back(pe.th32ProcessID);
+                                }
+                            } while (Process32NextA(snap, &pe));
+                        }
+                        CloseHandle(snap);
+                    }
+                    attached = sky::game::find_game_process_phys(info, game_name, live_pids);
                 }
                 if (attached) {
                     sky::driver::g_driver->set_attached(info.pid, info.base);
