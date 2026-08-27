@@ -3,6 +3,9 @@
 #include "../../include/driver/idriver.hpp"
 #include "../../include/game/kernel_cr3.hpp"
 #include "../../include/utils/logger.hpp"
+#include <tlhelp32.h>
+#include <algorithm>
+#include <vector>
 
 namespace sky::game {
 
@@ -741,6 +744,22 @@ namespace sky::game {
     static constexpr uintptr_t kPebPhys     = 0x3B8;     // Peb
     static constexpr uintptr_t kImgPhys     = 0x5A8;     // ImageFileName (15B)
 
+    // Multiple offset rows for different Windows versions.
+    struct EprocRow {
+        const char* tag;
+        uint16_t dtb;      // DirectoryTableBase (KPROCESS)
+        uint16_t pid;      // UniqueProcessId
+        uint16_t peb;      // Peb
+        uint16_t name;     // ImageFileName - 0 = unknown for this build
+    };
+    static const EprocRow kRows[] = {
+        { "Win11 24H2/25H2 (26100+)",             0x28, 0x1d0, 0x2e0, 0x338 },
+        { "Win10 2004..Win11 23H2 (19041-22631)", 0x28, 0x440, 0x3b8, 0x5a8 },
+        { "Win10 1903/1909 (18362/18363)",        0x28, 0x2e8, 0x3f8, 0x450 },
+        { "Win10 1703..1809 (15063-17763)",       0x28, 0x2e0, 0x3f8, 0x450 },
+    };
+    static const size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
+
     bool find_game_process_phys(GameProcessInfo& out, const char* name_prefix) {
         if (!name_prefix || !name_prefix[0]) return false;
         auto drv = sky::driver::g_driver;
@@ -800,65 +819,134 @@ namespace sky::game {
         auto saved_dtb = drv->get_dtb();
         static std::chrono::steady_clock::time_point s_last_prog{};
 
+        // --- Live PID snapshot (Toolhelp32) ---
+        std::vector<uint32_t> live_pids;
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            PROCESSENTRY32A pe = {};
+            pe.dwSize = sizeof(pe);
+            if (Process32FirstA(snap, &pe)) {
+                do {
+                    char lower_name[16] = {0};
+                    for (size_t i = 0; i < sizeof(lower_name)-1 && pe.szExeFile[i]; i++)
+                        lower_name[i] = (char)tolower((unsigned char)pe.szExeFile[i]);
+                    if (strcmp(lower_name, name_prefix) == 0) {
+                        live_pids.push_back(pe.th32ProcessID);
+                    }
+                } while (Process32NextA(snap, &pe));
+            }
+            CloseHandle(snap);
+        }
+        if (live_pids.empty()) {
+            sky::driver::write_state_log("attach=TRY physscan=NO_LIVE_PID");
+            return false;
+        }
+
+        // Struct for candidates
+        struct Candidate {
+            uintptr_t eproc_phys = 0;
+            uintptr_t cr3 = 0;
+            uint32_t pid = 0;
+            uintptr_t peb = 0;
+            const EprocRow* row = nullptr;
+            bool live = false;
+            int score = 0;
+        };
+        std::vector<Candidate> cands;
+
         for (uintptr_t pa = scan_start; pa + chunk_size <= scan_end; pa += step) {
             if (!drv->read_physical(pa, chunk.data(), chunk_size))
                 continue;
+
+            // CASE-INSENSITIVE scan for ImageFileName
             for (uintptr_t off = 0; off + prefix_len <= chunk_size; off++) {
-                if (memcmp(chunk.data() + off, name_prefix, prefix_len) != 0)
-                    continue;
+                bool match = true;
+                for (size_t k = 0; k < prefix_len; k++) {
+                    char c = chunk[off + k];
+                    if (tolower(c) != name_prefix[k]) { match = false; break; }
+                }
+                if (!match) continue;
 
-                // Candidate: EPROCESS ImageFileName hit → EPROCESS phys is
-                // 0x5A8 bytes below the string.
                 uintptr_t str_phys = pa + off;
-                uintptr_t eproc_phys = str_phys - kImgPhys;
-                if (eproc_phys < scan_start) continue;
+                uintptr_t eproc_phys = (str_phys >= kImgPhys) ? str_phys - kImgPhys : 0;
+                if (!eproc_phys || eproc_phys < scan_start) continue;
 
-                // DEBUG: log the actual 14-char name we found
-                static int s_dbg_names = 0;
-                if (s_dbg_names < 5) {
-                    char nm[15] = { 0 };
-                    drv->read_physical(str_phys, nm, 14);
-                    sky::driver::write_state_log("attach=TRY found_name=\"" + std::string(nm) + "\" at 0x" + std::format("{:x}", str_phys));
-                    s_dbg_names++;
+                // Try each known offset row
+                for (size_t ri = 0; ri < kRowCount; ri++) {
+                    const EprocRow& row = kRows[ri];
+                    if (!row.name) continue;  // unknown name offset for this row
+
+                    uintptr_t B = str_phys - row.name;
+                    if (B & 0xF) continue;  // pool is 16-byte aligned
+                    if (B < scan_start) continue;
+
+                    // Read PID at this row's offset
+                    uint32_t pid = 0;
+                    if (!drv->read_physical(B + row.pid, &pid, sizeof(pid))) continue;
+                    if (pid < 4 || pid > 0xFFFF) continue;
+
+                    // Check against live PIDs
+                    bool live = std::find(live_pids.begin(), live_pids.end(), pid) != live_pids.end();
+
+                    // Read CR3 (DTB)
+                    uintptr_t cr3 = 0;
+                    if (!drv->read_physical(B + row.dtb, &cr3, sizeof(cr3))) continue;
+                    cr3 &= ~0xFFFULL;
+                    if (!is_plausible_cr3(cr3)) continue;
+
+                    // Read PEB
+                    uintptr_t peb = 0;
+                    if (!drv->read_physical(B + row.peb, &peb, sizeof(peb))) continue;
+                    if (!peb || peb > 0x7FFFFFFFFFFFULL) continue;
+
+                    // Score candidate
+                    int score = 1;
+                    if (live) score += 4;
+                    // Pool tag 'Proc' at B-0x10+8 = B-8
+                    if (B >= 0x10) {
+                        uint32_t tag = 0;
+                        if (drv->read_physical(B - 8, &tag, sizeof(tag)) && tag == 0x636F7250)
+                            score += 2;
+                    }
+
+                    cands.push_back({B, cr3, pid, peb, &row, live, score});
                 }
 
-                // Validate PID / CR3 / PEB directly at physical offsets.
-                uint32_t pid = 0;
-                if (!drv->read_physical(eproc_phys + kPidPhys, &pid, sizeof(pid)))
-                    continue;
-                if (pid < 4 || pid > 0xFFFF) continue;
+                // Generic scan-back for unknown builds (name offset 0x100..0x700)
+                for (uintptr_t B = (str_phys >= 0x700) ? (str_phys - 0x700) & ~0xFull : 0x1000;
+                     B + 0x100 <= str_phys; B += 0x10) {
+                    // Quick pool tag check first
+                    if (B < 0x10) continue;
+                    uint32_t tag = 0;
+                    if (!drv->read_physical(B - 8, &tag, sizeof(tag)) || tag != 0x636F7250)
+                        continue;
 
-                uintptr_t cr3 = 0;
-                if (!drv->read_physical(eproc_phys + kDirBasePhys, &cr3, sizeof(cr3)))
-                    continue;
-                cr3 &= ~0xFFFULL;
-                if (!is_plausible_cr3(cr3)) continue;
+                    // Try all rows for PID
+                    for (size_t ri = 0; ri < kRowCount; ri++) {
+                        const EprocRow& row = kRows[ri];
+                        uint32_t pid = 0;
+                        if (!drv->read_physical(B + row.pid, &pid, sizeof(pid))) continue;
+                        if (pid < 4 || pid > 0xFFFF) continue;
+                        bool live = std::find(live_pids.begin(), live_pids.end(), pid) != live_pids.end();
 
-                uintptr_t peb = 0;
-                if (!drv->read_physical(eproc_phys + kPebPhys, &peb, sizeof(peb)))
-                    continue;
-                if (!peb || peb > 0x7FFFFFFFFFFFULL) continue;
+                        uintptr_t cr3 = 0;
+                        if (!drv->read_physical(B + row.dtb, &cr3, sizeof(cr3))) continue;
+                        cr3 &= ~0xFFFULL;
+                        if (!is_plausible_cr3(cr3)) continue;
 
-                // ImageBaseAddress = PEB+0x10 via the found CR3, MZ-verified.
-                drv->set_dir_base((void*)cr3);
-                auto base = drv->read<uintptr_t>(peb + 0x10);
-                bool pe_ok = (base >= 0x10000 && base <= 0x7FFFFFFFFFFFULL)
-                    ? verify_game_pe(base) : false;
-                drv->set_dir_base((void*)saved_dtb);
-                if (!pe_ok) continue;
+                        uintptr_t peb = 0;
+                        if (!drv->read_physical(B + row.peb, &peb, sizeof(peb))) continue;
+                        if (!peb || peb > 0x7FFFFFFFFFFFULL) continue;
 
-                out.pid = pid;
-                out.cr3 = cr3;
-                out.base = base;
-                sky::driver::write_state_log("attach=OK physscan pid=" +
-                    std::to_string(pid) + " eproc=0x" + std::format("{:x}", eproc_phys) +
-                    " cr3=0x" + std::format("{:x}", cr3) +
-                    " base=0x" + std::format("{:x}", base));
-                return true;
+                        int score = 1;
+                        if (live) score += 4;
+                        score += 2; // pool tag bonus
+                        cands.push_back({B, cr3, pid, peb, &row, live, score});
+                    }
+                }
             }
 
-            // Progress heartbeat (~every 4s) so app.log shows the scan
-            // moving instead of looking hung.
+            // Progress heartbeat (~every 4s)
             auto pnow = std::chrono::steady_clock::now();
             if (pnow - s_last_prog >= std::chrono::seconds(4)) {
                 s_last_prog = pnow;
@@ -867,11 +955,45 @@ namespace sky::game {
             }
         }
 
-        static bool s_fail_logged = false;
-        if (!s_fail_logged) {
-            s_fail_logged = true;
-            sky::driver::write_state_log("attach=TRY physscan=NO_HIT");
+        if (cands.empty()) {
+            static bool s_fail_logged = false;
+            if (!s_fail_logged) {
+                s_fail_logged = true;
+                sky::driver::write_state_log("attach=TRY physscan=NO_HIT");
+            }
+            return false;
         }
+
+        // Sort: live first, then score, then lower phys addr
+        std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) {
+            if (a.live != b.live) return a.live > b.live;
+            if (a.score != b.score) return a.score > b.score;
+            return a.eproc_phys < b.eproc_phys;
+        });
+
+        // Pick best candidate and verify PE header
+        for (const auto& c : cands) {
+            drv->set_dir_base((void*)c.cr3);
+            uintptr_t base = 0;
+            if (drv->read(c.peb + 0x10, &base, sizeof(base))) {
+                bool pe_ok = (base >= 0x10000 && base <= 0x7FFFFFFFFFFFULL)
+                    ? verify_game_pe(base) : false;
+                drv->set_dir_base((void*)saved_dtb);
+                if (pe_ok) {
+                    out.pid = c.pid;
+                    out.cr3 = c.cr3;
+                    out.base = base;
+                    sky::driver::write_state_log("attach=OK physscan pid=" +
+                        std::to_string(out.pid) + " eproc=0x" + std::format("{:x}", c.eproc_phys) +
+                        " cr3=0x" + std::format("{:x}", c.cr3) +
+                        " base=0x" + std::format("{:x}", base) +
+                        " row=" + (c.row ? c.row->tag : "generic"));
+                    return true;
+                }
+            }
+            drv->set_dir_base((void*)saved_dtb);
+        }
+
         return false;
     }
 

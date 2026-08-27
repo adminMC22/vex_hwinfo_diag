@@ -1137,12 +1137,12 @@ namespace sky::driver {
         }
 
         // 2) Limited physical scan: [16MB, cap] at 4KB steps. This is the
-        // range where the ntoskrnl image is loaded on Win10 x64. The
-        // scan NEVER exceeds the backend cap: on ThrottleStop that is
-        // the 416MB WHEA ceiling (reads above machine-check), on
-        // ASMMAP64 it is total RAM. The heuristic above almost always
-        // hits first, so this is just a safety net. 4KB step catches
-        // non-2MB-aligned kernel loads (MZ not on 2MB boundary).
+                // range where the ntoskrnl image is loaded on Win10 x64. The
+                // scan NEVER exceeds the backend cap: on ThrottleStop that is
+                // the 416MB WHEA ceiling (reads above machine-check), on
+                // ASMMAP64 it is total RAM. The heuristic above almost always
+                // hits first, so this is just a safety net. 4KB step catches
+                // non-2MB-aligned image loads.
         if (!found) {
             LOG_INFO("kernel_phys_offset: heuristic miss, scanning [16MB..cap) at 4KB...");
             uint64_t scan_limit = phys_read_cap();
