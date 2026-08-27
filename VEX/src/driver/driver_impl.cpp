@@ -392,6 +392,31 @@ namespace sky::driver {
     static std::vector<PhysRange> s_ram_ranges;
     static bool s_ram_ranges_ready = false;
 
+    // Sanity gate for a single enumerated physical-RAM range. The
+    // SystemMemoryListInformation (class 80) layout has drifted across
+    // Windows builds — the parser below assumes a 13-ULONG_PTR header
+    // followed by flat (pfn, count) pairs, but modern builds interleave
+    // per-list counters between the run arrays. When the layout drifts,
+    // the parser reads counter dwords as if they were PFN runs and
+    // produces absurd ranges (observed: a 97GB range on an 8GB box from
+    // 0x1c1665000 to 0x1a02a44000). A single bogus range like that:
+    //   - inflates the union total past the loose `total >= expect/2`
+    //     sanity check, so the parse is wrongly accepted as good;
+    //   - then `pa_valid()` green-lights reads anywhere inside it,
+    //     including MMIO holes that machine-check the box.
+    // Rejecting implausible ranges here is the only reliable gate, since
+    // no two real contiguous-RAM ranges on consumer x64 hardware exceed
+    // 2x installed RAM in size or reach above 64GB in physical address.
+    static bool range_sane(uintptr_t start, uintptr_t end) {
+        if (end <= start) return false;                       // wraparound / inverted
+        uint64_t size  = (uint64_t)end - (uint64_t)start;
+        uint64_t total = get_total_phys();
+        if (!total) total = 0x40000000ULL;                    // 1GB floor if GlobalMemoryStatusEx failed
+        if (size > total * 2) return false;                   // no single range > 2x installed RAM
+        if ((uint64_t)end > 0x1000000000ULL) return false;    // < 64GB physical ceiling
+        return true;
+    }
+
     // EFI memory map (UEFI): every physical region with its type.
     // EfiConventionalMemory=7 is RAM; stolen/MMIO regions come back as
     // EfiReservedMemoryType(0)/EfiUnusableMemory(10)/EfiMemoryMappedIO(11)
@@ -419,6 +444,9 @@ namespace sky::driver {
             uint64_t bytes = pages << 12;
             if (!start || !bytes || start + bytes < start) continue;
             if (start + bytes > 0x1000000000ULL) continue;  // 64GB sanity
+            // Per-range sanity: rejects ghost entries that pass the simple
+            // overflow check above but produce absurd sizes from layout drift.
+            if (!range_sane((uintptr_t)start, (uintptr_t)(start + bytes))) continue;
             out.push_back({ (uintptr_t)start, (uintptr_t)(start + bytes) });
         }
         if (out.empty()) return false;
@@ -462,13 +490,29 @@ namespace sky::driver {
         const size_t n = (got - header) / (sizeof(ULONG_PTR) * 2);
         const ULONG_PTR* p = (const ULONG_PTR*)(buf.data() + header);
         std::vector<PhysRange> out;
+        size_t dropped_bogus = 0;
         for (size_t i = 0; i < n; i++) {
             ULONG_PTR pfn = p[i * 2];
             ULONG_PTR cnt = p[i * 2 + 1];
             if (!pfn || !cnt) continue;
             uintptr_t start = (uintptr_t)pfn << 12;
             uintptr_t end = start + ((uintptr_t)cnt << 12);
-            if (end > start) out.push_back({ start, end });
+            if (end > start) {
+                // Per-range sanity: layout drift produces absurd (pfn, cnt)
+                // pairs from counter dwords being read as PFN runs — a
+                // single bogus 97GB range on an 8GB box passed the old loose
+                // total check and then poisoned pa_valid() into green-lighting
+                // reads in MMIO holes. range_sane() rejects those here.
+                if (range_sane(start, end)) {
+                    out.push_back({ start, end });
+                } else {
+                    dropped_bogus++;
+                }
+            }
+        }
+        if (dropped_bogus) {
+            write_state_log("ram_ranges_list_drop_bogus count=" +
+                std::to_string(dropped_bogus));
         }
         if (out.empty()) return false;
         s_ram_ranges = std::move(out);
@@ -496,27 +540,37 @@ namespace sky::driver {
             write_state_log(msg);
         }
 
-        // Sort + merge overlapping/adjacent ranges.
+        // Sort + merge overlapping/adjacent ranges. Apply range_sane()
+        // again post-merge: a merged range that absorbed a bogus neighbor
+        // can itself be implausibly large (e.g. the 97GB ghost absorbing
+        // an adjacent real range). Belt-and-suspenders — the per-range
+        // filter at parse time already catches the common case.
         std::sort(s_ram_ranges.begin(), s_ram_ranges.end(),
             [](const PhysRange& a, const PhysRange& b) { return a.start < b.start; });
         std::vector<PhysRange> merged;
+        size_t merged_dropped = 0;
         for (auto& r : s_ram_ranges) {
+            if (!range_sane(r.start, r.end)) {
+                merged_dropped++;
+                continue;
+            }
             if (merged.empty() || r.start > merged.back().end)
                 merged.push_back(r);
             else if (r.end > merged.back().end)
                 merged.back().end = r.end;
         }
+        if (merged_dropped) {
+            write_state_log("ram_ranges_merge_drop_bogus count=" +
+                std::to_string(merged_dropped));
+        }
         s_ram_ranges.swap(merged);
 
-        // Sane-parse validation: if the header layout drifted (build
-        // differences), the union won't look like installed RAM. Reject
-        // the parse rather than risk treating a hole as readable. Note:
-        // the lists sum to ALL managed PFN pages (~installed RAM), while
-        // get_total_phys() reports usable RAM (stolen region excluded).
-        // On some builds the list includes duplicate/ghost entries (40GB
-        // on an 8GB box) that may not cover low memory; we accept any
-        // total >= expect/2 and rely on pa_valid's per-range check to
-        // gate reads.
+        // Sane-parse validation: range_sane() above filters out the
+        // ghost-range drift case, so a successful parse now reflects
+        // real contiguous RAM. The total check is still useful as a
+        // coarse "did we miss most of installed RAM" gate — but with
+        // both bounds, not just a lower one (parse underflow is just
+        // as wrong as parse overflow).
         uintptr_t total = 0;
         for (auto& r : s_ram_ranges) total += r.end - r.start;
         uint64_t expect = get_total_phys();
@@ -529,14 +583,41 @@ namespace sky::driver {
                          "-0x" + std::format("{:x}", r.end);
         }
         write_state_log(ranges_log);
-        bool sane = !s_ram_ranges.empty() && total >= expect / 2;
+        // Two-sided sanity: total must cover at least half of installed RAM
+        // (parse underflow) and not exceed 2x installed RAM (parse overflow
+        // — only happens if range_sane() missed something, which it
+        // shouldn't, but the gate is cheap).
+        bool sane = !s_ram_ranges.empty() &&
+                    total >= expect / 2 &&
+                    total <= expect * 2;
 
         if (!sane) {
-            // Fallback: only the band proven safe by 100+ ThrottleStop
-            // runs (reads below 416MB never MCE'd on this box).
+            // Fallback differs by backend:
+            //   - ThrottleStop: MmMapIoSpace machine-checks above ~416MB
+            //     (WHEA 0x124, observed 100+ times). Stay at the proven
+            //     416MB ceiling.
+            //   - ASMMAP64: ZwMapViewOfSection on \Device\PhysicalMemory
+            //     exposes only OS-managed RAM pages — holes inside the
+            //     installed-RAM range (iGPU stolen, MMIO) are NOT in the
+            //     section view, so a memcpy through the mapped VA raises
+            //     a normal page fault that the __try/__except in
+            //     read_physical_asmmap catches (returns false, drops the
+            //     cached window). That lets us safely use the full
+            //     installed-RAM band as a coarse gate when the proper
+            //     enumeration failed. Without this, every PML4 reverse
+            //     walk on a 4KB-mapped (HVCI) kernel returns NO_PT4K
+            //     because the actual PT page lives above 416MB.
             s_ram_ranges.clear();
-            s_ram_ranges.push_back({ 0x1000, 0x1A000000 });
-            write_state_log("ram_ranges=ENUM_FAIL cap=0x1a000000");
+            if (g_backend == BACKEND_ASMMAP64) {
+                uintptr_t cap = (uintptr_t)get_total_phys();
+                if (!cap) cap = 0x1A000000ULL;
+                s_ram_ranges.push_back({ 0x1000, cap });
+                write_state_log("ram_ranges=ENUM_FAIL_ASMMAP64 cap=0x" +
+                    std::format("{:x}", cap));
+            } else {
+                s_ram_ranges.push_back({ 0x1000, 0x1A000000 });
+                write_state_log("ram_ranges=ENUM_FAIL cap=0x1a000000");
+            }
         } else {
             std::string msg = "ram_ranges=" + std::to_string(s_ram_ranges.size());
             for (auto& r : s_ram_ranges) {
@@ -586,13 +667,26 @@ namespace sky::driver {
     // One map IOCTL (0x9C402580) maps a physical range into USER space;
     // reads are then plain memcpy from the mapped VA — zero per-read
     // IOCTLs. A 4MB window is cached so sequential page-walk reads stay
-    // inside it. NOTE: the \Device\PhysicalMemory view is NOT hole-proof —
-    // the section spans the whole physical space and touching a hole page
-    // (e.g. the ~427MB iGPU stolen region) raises an UNCORRECTABLE machine
-    // check that SEH CANNOT catch (WHEA bugchecks immediately). Safety comes
-    // from pa_valid() above: no request ever leaves this module unless it is
-    // fully inside an enumerated RAM range, and windows are clamped to the
-    // containing range so a window never spans a hole in the first place.
+    // inside it.
+    //
+    // Hole-safety story:
+    //   - Reads in real OS-managed RAM pages: succeed (no fault).
+    //   - Reads in addresses NOT in the \Device\PhysicalMemory section
+    //     view (e.g. most MMIO BARs): ZwMapViewOfSection refuses the
+    //     map → asmmap_map returns false → read returns false. Safe.
+    //   - Reads in firmware-stolen regions inside the installed-RAM
+    //     band (e.g. iGPU stolen on this box): the section view may
+    //     succeed but the memcpy raises a page fault caught by the
+    //     __try below (drops the window, returns false). In the worst
+    //     case (a hole the OS maps as MMIO), an UNCORRECTABLE machine
+    //     check fires and bugchecks the box. The __try cannot catch
+    //     that, so the practical safety gate is pa_valid() above:
+    //     only addresses inside enumerated real-RAM ranges are sent
+    //     here. When enumeration fails (the ASMMAP64 fallback in
+    //     enum_ram_ranges uses the full installed-RAM band), the
+    //     worst-case iGPU-stolen hole is the residual risk we accept
+    //     — without that fallback, the PML4 reverse-walk can never
+    //     reach the PT page on a 4KB-mapped (HVCI) kernel.
     static uintptr_t s_map_base = 0;
     static size_t    s_map_size = 0;
     static uintptr_t s_map_va   = 0;

@@ -302,8 +302,9 @@ namespace sky::game {
             // page whose PDE[pdi] points at that PT page. Both steps use the
             // same frame prefilter, so read cost is unchanged per page.
             if (!pd_page) {
-                sky::driver::write_state_log("attach=TRY pml4_rev step=pd4k");
+                sky::driver::write_state_log("attach=TRY pml4_rev step=pd4k kPti=" + std::to_string(kPti));
                 uintptr_t pt_page = 0;
+                int pt_candidates = 0;
                 for (auto& r : kRanges) {
                     if (r[0] > cap) break;
                     uintptr_t end = std::min(r[1], cap);
@@ -311,18 +312,19 @@ namespace sky::game {
                         heartbeat("pt", pa, end);
                         uint64_t t = 0;
                         if (!read_entry(pa, kPti * 8, kpbase, t)) continue;
+                        pt_candidates++;
                         if ((t & 0x000FFFFFFFFFF000ULL) != (kpbase & 0x000FFFFFFFFFF000ULL))
                             continue;
                         pt_page = pa;
                         sky::driver::write_state_log("attach=TRY pml4_rev pt=0x" +
                             std::format("{:x}", pt_page) + " pte=0x" +
-                            std::format("{:x}", t));
+                            std::format("{:x}", t) + " candidates=" + std::to_string(pt_candidates));
                         break;
                     }
                     if (pt_page) break;
                 }
                 if (!pt_page) {
-                    sky::driver::write_state_log("kernel_pml4_rev=NO_PT4K");
+                    sky::driver::write_state_log("kernel_pml4_rev=NO_PT4K candidates=" + std::to_string(pt_candidates));
                     LOG_WARNING("pml4 reverse: no 4KB PT page mapping the kernel image found");
                     return 0;
                 }
@@ -336,7 +338,8 @@ namespace sky::game {
                         if ((e & 0x000FFFFFFFFFF000ULL) != pt_page) continue;
                         pd_page = pa;
                         sky::driver::write_state_log("attach=TRY pml4_rev pd=0x" +
-                            std::format("{:x}", pd_page) + " (4KB)");
+                            std::format("{:x}", pd_page) + " (4KB) pde=0x" +
+                            std::format("{:x}", e));
                         break;
                     }
                     if (pd_page) break;
