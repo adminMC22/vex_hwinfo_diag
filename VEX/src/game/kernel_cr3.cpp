@@ -271,7 +271,8 @@ namespace sky::game {
         {
             const uintptr_t frame2m = kpbase & 0x000FFFFFFFE00000ULL;  // bits 21-51
             sky::driver::write_state_log("attach=TRY pml4_rev step=pd want=0x" +
-                std::format("{:x}", kpbase));
+                std::format("{:x}", kpbase) + " frame2m=0x" + std::format("{:x}", frame2m) +
+                " kPdi=" + std::to_string(kPdi));
             for (auto& r : kRanges) {
                 if (r[0] > cap) break;
                 uintptr_t end = std::min(r[1], cap);
@@ -286,7 +287,8 @@ namespace sky::game {
                     if ((e & 1ULL << 7) && (e & 0x000FFFFFFFE00000ULL) == frame2m) {
                         pd_page = pa;
                         sky::driver::write_state_log("attach=TRY pml4_rev pd=0x" +
-                            std::format("{:x}", pd_page) + " (2MB)");
+                            std::format("{:x}", pd_page) + " (2MB) pde=0x" +
+                            std::format("{:x}", e));
                         break;
                     }
                 }
@@ -313,7 +315,8 @@ namespace sky::game {
                             continue;
                         pt_page = pa;
                         sky::driver::write_state_log("attach=TRY pml4_rev pt=0x" +
-                            std::format("{:x}", pt_page));
+                            std::format("{:x}", pt_page) + " pte=0x" +
+                            std::format("{:x}", t));
                         break;
                     }
                     if (pt_page) break;
@@ -350,7 +353,7 @@ namespace sky::game {
         uintptr_t pdpt_page = 0;
         {
             sky::driver::write_state_log("attach=TRY pml4_rev step=pdpt want=0x" +
-                std::format("{:x}", pd_page));
+                std::format("{:x}", pd_page) + " kPdpti=" + std::to_string(kPdpti));
             for (auto& r : kRanges) {
                 if (r[0] > cap) break;
                 uintptr_t end = std::min(r[1], cap);
@@ -361,7 +364,8 @@ namespace sky::game {
                     if ((e & 0x000FFFFFFFFFF000ULL) != pd_page) continue;
                     pdpt_page = pa;
                     sky::driver::write_state_log("attach=TRY pml4_rev pdpt=0x" +
-                        std::format("{:x}", pdpt_page));
+                        std::format("{:x}", pdpt_page) + " pdpte=0x" +
+                        std::format("{:x}", e));
                     break;
                 }
                 if (pdpt_page) break;
@@ -377,7 +381,7 @@ namespace sky::game {
         uintptr_t pml4_page = 0;
         {
             sky::driver::write_state_log("attach=TRY pml4_rev step=pml4 want=0x" +
-                std::format("{:x}", pdpt_page));
+                std::format("{:x}", pdpt_page) + " kPml4i=" + std::to_string(kPml4i));
             for (auto& r : kRanges) {
                 if (r[0] > cap) break;
                 uintptr_t end = std::min(r[1], cap);
@@ -388,7 +392,8 @@ namespace sky::game {
                     if ((e & 0x000FFFFFFFFFF000ULL) != pdpt_page) continue;
                     pml4_page = pa;
                     sky::driver::write_state_log("attach=TRY pml4_rev pml4=0x" +
-                        std::format("{:x}", pml4_page));
+                        std::format("{:x}", pml4_page) + " pml4e=0x" +
+                        std::format("{:x}", e));
                     break;
                 }
                 if (pml4_page) break;
@@ -401,6 +406,9 @@ namespace sky::game {
         }
 
         // ---- Step 4: final self-verification (full known-answer walk) ----
+        sky::driver::write_state_log("attach=TRY pml4_rev verify kvbase=0x" +
+            std::format("{:x}", kvbase) + " kpbase=0x" + std::format("{:x}", kpbase) +
+            " pml4=0x" + std::format("{:x}", pml4_page));
         if (!sky::driver::verify_pml4_for_kernel(pml4_page, kvbase, kpbase)) {
             sky::driver::write_state_log("kernel_pml4_rev=VERIFY_FAIL");
             LOG_WARNING("pml4 reverse: derived PML4 failed the final walk — chain broken");
