@@ -954,24 +954,21 @@ namespace sky::game {
         // Pick best candidate and verify PE header
         for (const auto& c : cands) {
             drv->set_dir_base((void*)c.cr3);
-            uintptr_t base = 0;
-            if (drv->read(c.peb + 0x10, &base, sizeof(base))) {
-                bool pe_ok = (base >= 0x10000 && base <= 0x7FFFFFFFFFFFULL)
-                    ? verify_game_pe(base) : false;
-                drv->set_dir_base((void*)saved_dtb);
-                if (pe_ok) {
-                    out.pid = c.pid;
-                    out.cr3 = c.cr3;
-                    out.base = base;
-                    sky::driver::write_state_log("attach=OK physscan pid=" +
-                        std::to_string(out.pid) + " eproc=0x" + std::format("{:x}", c.eproc_phys) +
-                        " cr3=0x" + std::format("{:x}", c.cr3) +
-                        " base=0x" + std::format("{:x}", base) +
-                        " row=" + (c.row ? c.row->tag : "generic"));
-                    return true;
-                }
-            }
+            uintptr_t base = drv->read<uintptr_t>(c.peb + 0x10);
+            bool pe_ok = (base >= 0x10000 && base <= 0x7FFFFFFFFFFFULL)
+                ? verify_game_pe(base) : false;
             drv->set_dir_base((void*)saved_dtb);
+            if (pe_ok) {
+                out.pid = c.pid;
+                out.cr3 = c.cr3;
+                out.base = base;
+                sky::driver::write_state_log("attach=OK physscan pid=" +
+                    std::to_string(out.pid) + " eproc=0x" + std::format("{:x}", c.eproc_phys) +
+                    " cr3=0x" + std::format("{:x}", c.cr3) +
+                    " base=0x" + std::format("{:x}", base) +
+                    " row=" + (c.row ? c.row->tag : "generic"));
+                return true;
+            }
         }
 
         return false;

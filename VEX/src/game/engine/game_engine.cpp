@@ -4,6 +4,7 @@
 #include <include/game/offsets.hpp>
 #include <include/utils/logger.hpp>
 #include <include/game/sdk/fname_cache_context.hpp>
+#include <windows.h>
 #include <tlhelp32.h>
 
 namespace sky::game::engine {
